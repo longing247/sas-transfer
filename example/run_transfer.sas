@@ -1,24 +1,28 @@
 /* Example end-to-end workflow */
 
-%include "../sas/excel_io.sas";
-%include "../sas/source_md5.sas";
+%include "../sas/prepare_transfer_manifest.sas";
 %include "../sas/sftp_upload_manifest.sas";
 
 %let manifest=C:\Transfer\manifest.xlsx;
 %let result_xlsx=C:\Transfer\manifest_md5.xlsx;
 
 /*
- * Example Excel columns:
+ * Excel columns:
  *   1 DIRECTORY_PATH
  *   2 FILE_NAME
  *   3 MD5
  *   4 SFTP_TARGET
  *   5 EXTRACT (Y/N)
+ *
+ * One macro now handles Excel input, validation, MD5, optional extraction,
+ * creation of the SFTP-ready SAS dataset, and Excel output.
  */
-%read_manifest_excel(
+%prepare_transfer_manifest(
     xlsx=&manifest,
     sheet=Sheet1,
-    out=work.manifest,
+    result_xlsx=&result_xlsx,
+    output_sheet=MD5_Result,
+    out=work.md5_result,
     directory_col=1,
     file_col=2,
     md5_col=3,
@@ -26,34 +30,17 @@
     extract_col=5
 );
 
-/* Resolve source type, validate rules, calculate MD5 and prepare transfer files. */
-%source_md5(
-    data=work.manifest,
-    out=work.md5_result
-);
-
 proc print data=work.md5_result noobs;
 run;
 
-/* Write only the manifest-facing fields back to Excel. */
-%write_manifest_excel(
-    data=work.md5_result,
-    xlsx=&result_xlsx,
-    sheet=MD5_Result
-);
-
 /*
- * Preferred: SSH key authentication.
- *
- * Each run automatically receives a batch ID such as 20260913_001530.
- * A row with SFTP_TARGET=/incoming/study123 is therefore uploaded beneath:
+ * Each upload run receives a batch ID such as 20260913_001530.
+ * A row with SFTP_TARGET=/incoming/study123 is uploaded beneath:
  *
  *     /incoming/study123/20260913_001530/<file>
  *
- * REMOTE_DIR is the fallback base target and is also the base target for the
+ * REMOTE_DIR is the fallback base target and the base target for the
  * completed Excel file. The batch directory must already exist remotely.
- *
- * Set BATCH_ID= explicitly if an external scheduler owns the batch ID.
  */
 %sftp_upload_manifest(
     data=work.md5_result,
