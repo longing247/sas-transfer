@@ -2,19 +2,18 @@
  * prepare_transfer_manifest.sas
  *
  * Excel -> validate -> MD5 -> optional ZIP extraction -> SFTP-ready dataset
- *       -> update MD5 in the original Excel sheet.
+ *       -> completed result workbook.
  *
  * Macro column arguments are Excel/SAS column positions (1, 2, 3, ...).
  * DIRECTORY_PATH may be a .zip file or a normal Windows directory.
  * EXTRACT=Y is valid only for a file inside a ZIP.
- *
- * Windows SAS is required for the in-place Excel update because this uses
- * the EXCEL LIBNAME engine. HASHING_FILE() requires SAS 9.4M6+.
+ * HASHING_FILE() requires SAS 9.4M6+.
  */
 
 %macro prepare_transfer_manifest(
     xlsx=,
     sheet=,
+    result_xlsx=,
     out=work.md5_result,
     directory_col=1,
     file_col=2,
@@ -24,8 +23,7 @@
     getnames=YES
 );
     %local _dircol _filecol _md5col _sftpcol _extractcol
-           _dirlit _filelit _md5lit _extractlit
-           _errors _outlib _outmem _excel_rc;
+           _errors _outlib _outmem;
 
     /* A failed run must not leave an old successful result behind. */
     %let _outlib=%scan(&out,1,.);
@@ -48,17 +46,12 @@
     proc contents data=work._pm_raw out=work._pm_cols(keep=name varnum) noprint; run;
 
     proc sql noprint;
-        select name, nliteral(name) into :_dircol trimmed, :_dirlit trimmed
-          from work._pm_cols where varnum=&directory_col;
-        select name, nliteral(name) into :_filecol trimmed, :_filelit trimmed
-          from work._pm_cols where varnum=&file_col;
-        select name, nliteral(name) into :_md5col trimmed, :_md5lit trimmed
-          from work._pm_cols where varnum=&md5_col;
-        select name, nliteral(name) into :_extractcol trimmed, :_extractlit trimmed
-          from work._pm_cols where varnum=&extract_col;
+        select name into :_dircol trimmed from work._pm_cols where varnum=&directory_col;
+        select name into :_filecol trimmed from work._pm_cols where varnum=&file_col;
+        select name into :_md5col trimmed from work._pm_cols where varnum=&md5_col;
+        select name into :_extractcol trimmed from work._pm_cols where varnum=&extract_col;
         %if &sftp_target_col>0 %then %do;
-            select name into :_sftpcol trimmed
-              from work._pm_cols where varnum=&sftp_target_col;
+            select name into :_sftpcol trimmed from work._pm_cols where varnum=&sftp_target_col;
         %end;
     quit;
 
@@ -265,35 +258,16 @@
              transfer_path transfer_name;
     run;
 
-    /* 6. Update only the MD5 column in the original workbook. */
-    options validvarname=any validmemname=extend;
-    libname _pmxls excel path="&xlsx" header=yes scanttext=no mixed=yes filelock=yes;
-    %let _excel_rc=&syslibrc;
-
-    %if &_excel_rc ne 0 %then %do;
-        %put ERROR: Cannot open the Excel workbook for MD5 update. Close the workbook and retry.;
-        %goto cleanup;
+    /* 6. Write a simple completed manifest to a separate workbook. */
+    %if %length(%superq(result_xlsx)) %then %do;
+        proc export
+            data=&out(keep=row_id directory_path file_name md5 sftp_target extract)
+            outfile="&result_xlsx"
+            dbms=xlsx
+            replace;
+            sheet="&sheet";
+        run;
     %end;
-
-    proc sql;
-        update _pmxls."&sheet.$"n as x
-           set &_md5lit = (
-               select r.md5
-                 from &out as r
-                where strip(cats(x.&_dirlit))=r.directory_path
-                  and strip(cats(x.&_filelit))=r.file_name
-                  and upcase(substr(strip(cats(x.&_extractlit)),1,1))=r.extract
-           )
-         where exists (
-               select 1
-                 from &out as r
-                where strip(cats(x.&_dirlit))=r.directory_path
-                  and strip(cats(x.&_filelit))=r.file_name
-                  and upcase(substr(strip(cats(x.&_extractlit)),1,1))=r.extract
-         );
-    quit;
-
-    libname _pmxls clear;
 
 %cleanup:
     proc datasets library=work nolist;
