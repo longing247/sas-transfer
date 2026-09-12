@@ -40,18 +40,19 @@ Duplicate ZIP basenames are accepted only when every matching member has the sam
 );
 ```
 
-The macro now keeps only the flexibility that is useful for this workflow:
+Manifest processing is row based. Each Excel row is validated and processed independently in one DATA step:
 
-- headers are always expected;
-- the four required input fields are selected by column index;
-- `SFTP_TARGET` is mandatory;
-- MD5 is always recalculated rather than read from Excel;
-- the original workbook is never modified;
-- the completed manifest is written with a simple `PROC EXPORT`.
+```text
+row
+ -> validate
+ -> normal file / whole ZIP: calculate MD5
+ -> ZIP extraction: scan matching members, validate duplicate MD5, extract
+ -> result row
+```
 
-Column-index resolution is isolated in the internal `%_pm_resolve_columns()` helper so the main macro stays focused on the processing flow.
+This intentionally favors readable control flow over scanning a ZIP only once. If several rows reference the same ZIP, the ZIP can be opened once per row. For ordinary transfer manifests this is usually a worthwhile tradeoff.
 
-Invalid rows and direct files are handled in one DATA step. ZIP processing remains separate because it requires member enumeration, duplicate-MD5 validation and optional extraction.
+The implementation keeps only the flexibility needed by the workflow: headers are required, the four input fields are selected by column index, `SFTP_TARGET` is mandatory, MD5 is always recalculated, and the completed manifest is written to a separate workbook with `PROC EXPORT`.
 
 The SFTP-ready dataset contains:
 
@@ -60,9 +61,9 @@ ROW_ID | DIRECTORY_PATH | FILE_NAME | MD5 | SFTP_TARGET | EXTRACT |
 SOURCE_TYPE | TRANSFER_PATH | TRANSFER_NAME
 ```
 
-`TRANSFER_PATH` is the actual local file to upload. For `EXTRACT=Y`, it points to the extracted temporary file in SAS `WORK`.
+During processing each row also has `STATUS` and `MESSAGE`. If any row has an error, all errors are logged and the complete preparation step fails. A successful output dataset and result workbook are published only when every row succeeds.
 
-If any row fails validation, the whole preparation step fails and no successful output dataset or completed workbook is produced.
+For `EXTRACT=Y`, `TRANSFER_PATH` points to the extracted temporary file in SAS `WORK`.
 
 `HASHING_FILE()` requires SAS 9.4M6 or later.
 
@@ -84,13 +85,7 @@ If any row fails validation, the whole preparation step fails and no successful 
 );
 ```
 
-The SFTP macro is intentionally opinionated:
-
-- key authentication only;
-- `BATCH_ID=` is required and is owned by the caller;
-- each data file must have its own `SFTP_TARGET`;
-- `REMOTE_DIR=` is used only for the completed manifest workbook;
-- remote batch directories must already exist.
+The SFTP macro is intentionally opinionated: it uses key authentication, requires a caller-owned `BATCH_ID`, requires `SFTP_TARGET` for each data file, and uses `REMOTE_DIR` only for the completed manifest workbook. Remote batch directories must already exist.
 
 A data row is uploaded as:
 
@@ -116,5 +111,5 @@ See `example/run_transfer.sas`.
 
 The workflow has two public stages:
 
-1. `%prepare_transfer_manifest()` validates the input, calculates MD5, optionally extracts ZIP members, creates `work.md5_result`, and writes the completed manifest workbook.
+1. `%prepare_transfer_manifest()` processes the manifest row by row, calculates MD5, optionally extracts ZIP members, creates `work.md5_result`, and writes the completed manifest workbook.
 2. `%sftp_upload_manifest()` uploads the resolved files and completed manifest using a caller-supplied batch ID.
