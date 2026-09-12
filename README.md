@@ -11,7 +11,7 @@ The Excel manifest is column-position driven. A typical layout is:
 | 1 | `DIRECTORY_PATH` | Either a full path to a `.zip` file or a normal directory path |
 | 2 | `FILE_NAME` | File represented by that row |
 | 3 | `MD5` | MD5 output column |
-| 4 | `SFTP_TARGET` | Remote SFTP directory for that file |
+| 4 | `SFTP_TARGET` | Base remote SFTP directory for that file |
 | 5 | `EXTRACT` | `Y` or `N` |
 
 The source rules are:
@@ -85,7 +85,37 @@ SOURCE_TYPE | TRANSFER_PATH | TRANSFER_NAME
 
 `sas/sftp_upload_manifest.sas` defines `%sftp_upload_manifest()`.
 
-The macro uploads each unique resolved `TRANSFER_PATH`. The remote directory comes from that row's `SFTP_TARGET`. `REMOTE_DIR=` is used as a fallback and as the target directory for the result Excel workbook.
+The macro uploads each unique resolved `TRANSFER_PATH`. The row's `SFTP_TARGET` is treated as a **base remote directory**. `REMOTE_DIR=` is used as a fallback base target and as the base target for the result Excel workbook.
+
+Every invocation receives a batch ID. By default it is generated as:
+
+```text
+YYYYMMDD_HHMMSS
+```
+
+For example:
+
+```text
+20260913_001530
+```
+
+The batch ID is appended to the row-level SFTP base target. Therefore:
+
+```text
+SFTP_TARGET=/incoming/study123
+BATCH_ID=20260913_001530
+FILE_NAME=report.pdf
+```
+
+is uploaded as:
+
+```text
+/incoming/study123/20260913_001530/report.pdf
+```
+
+This keeps original filenames unchanged while separating daily runs, retries, and multiple transfers on the same day.
+
+Example:
 
 ```sas
 %sftp_upload_manifest(
@@ -94,12 +124,23 @@ The macro uploads each unique resolved `TRANSFER_PATH`. The remote directory com
     host=sftp.company.com,
     user=myuserid,
     remote_dir=/incoming/study123,
+    batch_id=,
     auth=KEY,
     keyfile=C:\Keys\sftp_private.ppk,
     port=22,
     out=work.upload_log
 );
 ```
+
+Leaving `BATCH_ID=` blank generates it automatically. It can also be supplied explicitly when an external scheduler owns the batch identifier.
+
+The upload log includes:
+
+```text
+BATCH_ID | LOCAL_PATH | REMOTE_FILE | UPLOAD_DTTM | STATUS | MESSAGE
+```
+
+**Remote directory creation:** the batch directory currently needs to exist on the SFTP server before upload. The native SAS SFTP filename-engine implementation used for `AUTH=KEY` does not create the directory in this macro.
 
 On Windows, `AUTH=KEY` uses the native SAS SFTP filename engine with PuTTY-style key options. `AUTH=PASSWORD` uses an external `psftp.exe` process and requires XCMD permission.
 
@@ -112,4 +153,4 @@ The workflow is:
 1. `%read_manifest_excel()` reads and normalizes the Excel manifest.
 2. `%source_md5()` validates each row, calculates MD5, and prepares the actual transfer file.
 3. `%write_manifest_excel()` writes the completed manifest.
-4. `%sftp_upload_manifest()` uploads each resolved file to its row-level SFTP target and optionally uploads the completed Excel file.
+4. `%sftp_upload_manifest()` generates or accepts a batch ID and uploads each resolved file beneath its batch-specific SFTP target.
