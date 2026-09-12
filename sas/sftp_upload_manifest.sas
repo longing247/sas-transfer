@@ -1,12 +1,9 @@
 /*
  * sftp_upload_manifest.sas
  *
- * Upload all unique ZIP files from a successfully validated MD5 dataset,
- * plus the Excel manifest, to one SFTP destination.
- *
- * Call this only after %zip_md5() succeeds. %zip_md5() raises errors and does
- * not create a successful result when validation fails, so no STATUS column
- * is required here.
+ * Uploads the resolved TRANSFER_PATH produced by %source_md5().
+ * Each row may have its own SFTP_TARGET. REMOTE_DIR is a fallback target and
+ * is also used for the result Excel file when EXCEL= is supplied.
  *
  * Windows/SAS notes:
  * - AUTH=KEY uses the native SAS SFTP filename engine and a PuTTY .ppk key.
@@ -30,40 +27,56 @@
     %local _auth;
     %let _auth=%upcase(%superq(auth));
 
-    proc sort data=&data(keep=zip_path where=(not missing(zip_path)))
-              out=work._upload_files nodupkey;
-        by zip_path;
+    proc sort data=&data(
+        keep=transfer_path transfer_name sftp_target
+        where=(not missing(transfer_path))
+    ) out=work._upload_files nodupkey;
+        by transfer_path transfer_name sftp_target;
     run;
 
     data work._upload_files;
         set work._upload_files end=eof;
-        length local_path $1024;
-        local_path=zip_path;
+        length local_path $2048 target_dir $2048;
+        local_path=transfer_path;
+        target_dir=coalescec(strip(sftp_target),strip("&remote_dir"));
         output;
-        if eof then do;
-            local_path="&excel";
-            output;
-        end;
-        keep local_path;
+        %if %length(%superq(excel)) %then %do;
+            if eof then do;
+                local_path="&excel";
+                transfer_name=scan(local_path,-1,'\/');
+                target_dir=strip("&remote_dir");
+                output;
+            end;
+        %end;
+        keep local_path transfer_name target_dir;
     run;
 
     %if &_auth = KEY %then %do;
         data &out;
             set work._upload_files;
-            length filename_only $512 remote_file $2048 localref $8 remoteref $8
+            length remote_file $2048 localref $8 remoteref $8
                    status $40 message $500 sftp_options $2048;
-            filename_only=scan(local_path,-1,'\/');
-            remote_file=cats(prxchange('s/\/+$/','1',strip("&remote_dir")),'/',filename_only);
+
+            if missing(target_dir) then do;
+                status='SFTP_TARGET_ERROR';
+                message='SFTP target directory is missing.';
+                output;
+                return;
+            end;
+
+            remote_file=cats(prxchange('s/\/+$/','1',strip(target_dir)),'/',strip(transfer_name));
             localref='localf'; remoteref='remotef';
             rc_local=filename(localref,local_path);
-            if rc_local ne 0 then do;
+            if rc_local ne 0 or fexist(localref)=0 then do;
                 status='LOCAL_FILE_ERROR'; message=sysmsg(); output;
                 rc_clear=filename(localref); return;
             end;
+
             sftp_options=cats('-P &port -i ',quote(strip("&keyfile")));
             %if %length(%superq(passphrase)) %then %do;
                 sftp_options=cats(sftp_options,' -pw ',quote("&passphrase"));
             %end;
+
             rc_remote=filename(remoteref,remote_file,'SFTP',cats(
                 'host=',quote("&host"),' ','user=',quote("&user"),' ',
                 'recfm=s ','optionsx=',quote(trim(sftp_options))));
@@ -84,10 +97,17 @@
         filename _sftpbatch temp;
         data &out;
             set work._upload_files;
-            length filename_only $512 remote_file $2048 status $40 message $500
+            length remote_file $2048 status $40 message $500
                    batch_path $1024 cmd $4096 batch_line $4096;
-            filename_only=scan(local_path,-1,'\/');
-            remote_file=cats(prxchange('s/\/+$/','1',strip("&remote_dir")),'/',filename_only);
+
+            if missing(target_dir) then do;
+                status='SFTP_TARGET_ERROR';
+                message='SFTP target directory is missing.';
+                output;
+                return;
+            end;
+
+            remote_file=cats(prxchange('s/\/+$/','1',strip(target_dir)),'/',strip(transfer_name));
             batch_path=pathname('_sftpbatch');
             fid=fopen('_sftpbatch','O');
             if fid=0 then do; status='BATCH_FILE_ERROR'; message=sysmsg(); output; return; end;
@@ -111,7 +131,5 @@
         %put ERROR: AUTH must be KEY or PASSWORD.;
     %end;
 
-    proc datasets library=work nolist;
-        delete _upload_files;
-    quit;
+    proc datasets library=work nolist; delete _upload_files; quit;
 %mend sftp_upload_manifest;
