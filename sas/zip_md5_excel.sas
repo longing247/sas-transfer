@@ -4,13 +4,13 @@
  * Defines %zip_md5(), which works only with SAS datasets.
  * Excel read/write concerns are separated into excel_io.sas.
  *
- * Input dataset must contain ZIP_PATH and FILE_NAME.
+ * Input dataset must contain ZIP_PATH and FILE_PATH.
  * Optional ROW_ID is preserved when present; otherwise one is generated.
  *
- * The target may be anywhere in a nested ZIP folder. If the same basename
- * occurs multiple times, every instance is hashed. Identical duplicates are
- * accepted; missing files, differing duplicate hashes, ZIP access failures,
- * and hash failures raise an ERROR and abort the macro.
+ * FILE_PATH is treated as a basename to locate anywhere inside the ZIP.
+ * If the same basename occurs multiple times, every instance is hashed.
+ * Identical duplicates are accepted; missing files, differing duplicate hashes,
+ * ZIP access failures, and hash failures raise an ERROR and abort the macro.
  *
  * Requires SAS 9.4M6+ for HASHING_FILE().
  */
@@ -20,14 +20,14 @@
 
     data work._requests;
         set &data;
-        length _zip_path $1024 _file_name $512;
+        length _zip_path $1024 _file_path $1024;
         _zip_path=strip(vvaluex('zip_path'));
-        _file_name=strip(vvaluex('file_name'));
+        _file_path=strip(vvaluex('file_path'));
         if missing(vvaluex('row_id')) then _row_id=_n_;
         else _row_id=input(vvaluex('row_id'),best32.);
-        if not missing(_zip_path) and not missing(_file_name);
-        keep _row_id _zip_path _file_name;
-        rename _row_id=row_id _zip_path=zip_path _file_name=file_name;
+        if not missing(_zip_path) and not missing(_file_path);
+        keep _row_id _zip_path _file_path;
+        rename _row_id=row_id _zip_path=zip_path _file_path=file_path;
     run;
 
     proc sort data=work._requests(keep=zip_path) out=work._zips nodupkey;
@@ -36,7 +36,7 @@
 
     data work._members;
         set work._zips;
-        length zipref $8 member $1024 member_file $512 scan_error 8;
+        length zipref $8 member $1024 member_file $1024 scan_error 8;
         zipref='zin';
         scan_error=0;
         rc=filename(zipref,zip_path,'ZIP');
@@ -71,12 +71,12 @@
 
     proc sql;
         create table work._matches as
-        select r.row_id, r.zip_path, r.file_name, m.member, m.scan_error
+        select r.row_id, r.zip_path, r.file_path, m.member, m.scan_error
           from work._requests as r
           left join work._members as m
             on r.zip_path=m.zip_path
            and (m.scan_error=1 or
-                upcase(strip(r.file_name))=upcase(strip(m.member_file)))
+                upcase(strip(scan(r.file_path,-1,'/\\')))=upcase(strip(m.member_file)))
          order by r.row_id,m.member;
     quit;
 
@@ -104,39 +104,37 @@
             end;
             rc_clear=filename(memref);
         end;
-        keep row_id zip_path file_name member member_md5 hash_error;
+        keep row_id zip_path file_path member member_md5 hash_error;
     run;
 
     proc sql;
         create table work._summary as
-        select row_id, zip_path, file_name,
+        select row_id, zip_path, file_path,
                count(member) as match_count,
                count(distinct member_md5) as distinct_md5_count,
                min(member_md5) as md5 length=32,
                sum(hash_error) as hash_errors
           from work._hashes
-         group by row_id,zip_path,file_name
+         group by row_id,zip_path,file_path
          order by row_id;
     quit;
 
-    /* Collect all validation failures before aborting, so the log identifies
-       every problematic manifest row in one run. */
     data _null_;
         set work._summary end=eof;
         retain errors 0;
 
         if hash_errors>0 then do;
             errors+1;
-            putlog 'ERROR: ZIP access or MD5 calculation failed. ' row_id= zip_path= file_name=;
+            putlog 'ERROR: ZIP access or MD5 calculation failed. ' row_id= zip_path= file_path=;
         end;
         else if match_count=0 then do;
             errors+1;
-            putlog 'ERROR: Requested file not found in ZIP. ' row_id= zip_path= file_name=;
+            putlog 'ERROR: Requested file not found in ZIP. ' row_id= zip_path= file_path=;
         end;
         else if distinct_md5_count>1 then do;
             errors+1;
             putlog 'ERROR: Duplicate filename instances have different MD5 values. '
-                   row_id= zip_path= file_name= match_count= distinct_md5_count=;
+                   row_id= zip_path= file_path= match_count= distinct_md5_count=;
         end;
 
         if eof then call symputx('_validation_errors',errors,'L');
@@ -152,10 +150,9 @@
         %return;
     %end;
 
-    /* Successful output is intentionally minimal: no STATUS column. */
     data &out;
         set work._summary;
-        keep row_id zip_path file_name md5;
+        keep row_id zip_path file_path md5;
     run;
 
     proc datasets library=work nolist;
