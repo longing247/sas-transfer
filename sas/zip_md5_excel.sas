@@ -1,9 +1,14 @@
 /*
  * zip_md5_excel.sas
  *
- * Read an Excel manifest where:
- *   column 1 = path to ZIP file
- *   column 2 = file name to locate inside the ZIP
+ * Defines %zip_md5(), which works only with SAS datasets.
+ * Excel read/write concerns are intentionally separated into excel_io.sas.
+ *
+ * Input dataset must contain:
+ *   ZIP_PATH  - full path to the ZIP file
+ *   FILE_NAME - basename to locate anywhere inside the ZIP
+ *
+ * Optional ROW_ID is preserved when present; otherwise one is generated.
  *
  * The target file may occur in any nested folder inside the ZIP.
  * If the same basename occurs multiple times, all instances are hashed.
@@ -13,57 +18,32 @@
  * Requires SAS 9.4M6+ for HASHING_FILE().
  */
 
-%macro zip_md5_excel(
-    xlsx=,
-    sheet=,
-    out=work.md5_result,
-    getnames=YES
+%macro zip_md5(
+    data=,
+    out=work.md5_result
 );
 
-    /* 1. Read Excel */
-    proc import
-        datafile="&xlsx"
-        out=work._md5_input
-        dbms=xlsx
-        replace;
-        %if %length(%superq(sheet)) %then %do;
-            sheet="&sheet";
-        %end;
-        getnames=&getnames;
-    run;
-
-    /* 2. Resolve the first two imported columns dynamically */
-    proc sql noprint;
-        select name
-          into :_zipcol trimmed
-          from dictionary.columns
-         where libname='WORK'
-           and memname='_MD5_INPUT'
-           and varnum=1;
-
-        select name
-          into :_filecol trimmed
-          from dictionary.columns
-         where libname='WORK'
-           and memname='_MD5_INPUT'
-           and varnum=2;
-    quit;
-
-    /* 3. Normalize manifest rows and preserve Excel row order */
+    /* 1. Normalize the SAS input dataset. */
     data work._requests;
-        set work._md5_input;
-        length zip_path $1024 file_name $512;
+        set &data;
+        length _zip_path $1024 _file_name $512;
 
-        row_id = _n_;
-        zip_path = strip(vvaluex("&_zipcol"));
-        file_name = strip(vvaluex("&_filecol"));
+        _zip_path=strip(vvaluex('zip_path'));
+        _file_name=strip(vvaluex('file_name'));
 
-        if not missing(zip_path) and not missing(file_name);
+        /* Preserve ROW_ID from the input when available. */
+        if missing(vvaluex('row_id')) then _row_id=_n_;
+        else _row_id=input(vvaluex('row_id'),best32.);
 
-        keep row_id zip_path file_name;
+        if not missing(_zip_path) and not missing(_file_name);
+
+        keep _row_id _zip_path _file_name;
+        rename _row_id=row_id
+               _zip_path=zip_path
+               _file_name=file_name;
     run;
 
-    /* 4. Scan each distinct ZIP only once */
+    /* 2. Scan each distinct ZIP only once. */
     proc sort
         data=work._requests(keep=zip_path)
         out=work._zips
@@ -76,7 +56,7 @@
         length zipref $8 member $1024 member_file $512;
 
         zipref='zin';
-        rc=filename(zipref, zip_path, 'ZIP');
+        rc=filename(zipref,zip_path,'ZIP');
 
         if rc ne 0 then do;
             putlog 'ERROR: Cannot assign ZIP fileref. ' zip_path= rc=;
@@ -109,7 +89,7 @@
         keep zip_path member member_file;
     run;
 
-    /* 5. Match every requested basename against all nested ZIP members */
+    /* 3. Match every requested basename against all nested ZIP members. */
     proc sql;
         create table work._matches as
         select r.row_id,
@@ -120,10 +100,10 @@
           left join work._members as m
             on r.zip_path=m.zip_path
            and upcase(strip(r.file_name))=upcase(strip(m.member_file))
-         order by r.row_id, m.member;
+         order by r.row_id,m.member;
     quit;
 
-    /* 6. Calculate MD5 for every matching member */
+    /* 4. Calculate MD5 for every matching member. */
     data work._hashes;
         set work._matches;
         length memref $8 member_md5 $32 hash_status $20;
@@ -167,7 +147,7 @@
         keep row_id zip_path file_name member member_md5 hash_status;
     run;
 
-    /* 7. Summarize all matching instances for each Excel row */
+    /* 5. Summarize all matching instances for each request row. */
     proc sql;
         create table work._summary as
         select row_id,
@@ -181,11 +161,11 @@
                sum(case when hash_status='HASH_ERROR' then 1 else 0 end)
                    as hash_errors
           from work._hashes
-         group by row_id, zip_path, file_name
+         group by row_id,zip_path,file_name
          order by row_id;
     quit;
 
-    /* 8. Final result */
+    /* 6. Final validation result. */
     data &out;
         set work._summary;
         length md5 $32 status $40;
@@ -211,11 +191,11 @@
             status='OK_IDENTICAL_DUPLICATES';
         end;
 
-        keep zip_path file_name md5 status match_count;
+        keep row_id zip_path file_name md5 status match_count;
     run;
 
     proc datasets library=work nolist;
-        delete _md5_input _requests _zips _members _matches _hashes _summary;
+        delete _requests _zips _members _matches _hashes _summary;
     quit;
 
-%mend zip_md5_excel;
+%mend zip_md5;
