@@ -2,19 +2,19 @@
  * prepare_transfer_manifest.sas
  *
  * One public macro for the complete local preparation stage:
- *   Excel -> validate -> MD5 -> optional ZIP extraction -> result dataset -> Excel.
+ *   Excel -> validate -> MD5 -> optional ZIP extraction -> result dataset
+ *         -> update MD5 in the original Excel sheet.
  *
  * DIRECTORY_PATH may be a .zip file or a normal Windows directory.
  * EXTRACT=Y is valid only for a file inside a ZIP.
  *
- * Requires SAS 9.4M6+ for HASHING_FILE().
+ * Windows SAS is required for the in-place Excel update because this uses
+ * the EXCEL LIBNAME engine. HASHING_FILE() requires SAS 9.4M6+.
  */
 
 %macro prepare_transfer_manifest(
     xlsx=,
     sheet=,
-    result_xlsx=,
-    output_sheet=MD5_Result,
     out=work.md5_result,
     directory_col=1,
     file_col=2,
@@ -24,9 +24,10 @@
     getnames=YES
 );
     %local _dircol _filecol _md5col _sftpcol _extractcol
-           _errors _outlib _outmem;
+           _dirlit _filelit _md5lit _extractlit
+           _errors _outlib _outmem _excel_rc;
 
-    /* Start clean so a failed run cannot leave an old successful result. */
+    /* A failed run must not leave an old successful result behind. */
     %let _outlib=%scan(&out,1,.);
     %let _outmem=%scan(&out,2,.);
     %if %length(&_outmem)=0 %then %do;
@@ -37,7 +38,7 @@
         proc datasets library=&_outlib nolist; delete &_outmem; quit;
     %end;
 
-    /* 1. Read Excel and resolve the requested columns by position. */
+    /* 1. Read the manifest and map configured Excel columns by position. */
     proc import datafile="&xlsx" out=work._pm_raw dbms=xlsx replace;
         %if %length(%superq(sheet)) %then %do; sheet="&sheet"; %end;
         getnames=&getnames;
@@ -47,23 +48,36 @@
 
     data _null_;
         set work._pm_cols;
-        if varnum=&directory_col   then call symputx('_dircol',name,'L');
-        if varnum=&file_col        then call symputx('_filecol',name,'L');
-        if &md5_col>0 and varnum=&md5_col then call symputx('_md5col',name,'L');
-        if &sftp_target_col>0 and varnum=&sftp_target_col then call symputx('_sftpcol',name,'L');
-        if varnum=&extract_col     then call symputx('_extractcol',name,'L');
+        if varnum=&directory_col then do;
+            call symputx('_dircol',name,'L');
+            call symputx('_dirlit',nliteral(name),'L');
+        end;
+        if varnum=&file_col then do;
+            call symputx('_filecol',name,'L');
+            call symputx('_filelit',nliteral(name),'L');
+        end;
+        if varnum=&md5_col then do;
+            call symputx('_md5col',name,'L');
+            call symputx('_md5lit',nliteral(name),'L');
+        end;
+        if &sftp_target_col>0 and varnum=&sftp_target_col then
+            call symputx('_sftpcol',name,'L');
+        if varnum=&extract_col then do;
+            call symputx('_extractcol',name,'L');
+            call symputx('_extractlit',nliteral(name),'L');
+        end;
     run;
 
     %if not %length(%superq(_dircol)) or
         not %length(%superq(_filecol)) or
+        not %length(%superq(_md5col)) or
         not %length(%superq(_extractcol)) or
-        (&md5_col>0 and not %length(%superq(_md5col))) or
         (&sftp_target_col>0 and not %length(%superq(_sftpcol))) %then %do;
         %put ERROR: One or more requested Excel column numbers do not exist.;
         %goto cleanup;
     %end;
 
-    /* 2. Normalize the manifest and validate the row-level rules. */
+    /* 2. Normalize rows and validate the source/extraction rules. */
     data work._pm_manifest;
         set work._pm_raw;
         length directory_path $1024 file_name $1024 md5 $32
@@ -72,14 +86,16 @@
         row_id=_n_;
         directory_path=strip(vvaluex("&_dircol"));
         file_name=strip(vvaluex("&_filecol"));
+        md5=strip(vvaluex("&_md5col"));
         extract=upcase(substr(strip(vvaluex("&_extractcol")),1,1));
-        %if &md5_col>0 %then %do; md5=strip(vvaluex("&_md5col")); %end;
-        %else %do; md5=''; %end;
-        %if &sftp_target_col>0 %then %do; sftp_target=strip(vvaluex("&_sftpcol")); %end;
-        %else %do; sftp_target=''; %end;
+        %if &sftp_target_col>0 %then %do;
+            sftp_target=strip(vvaluex("&_sftpcol"));
+        %end;
+        %else %do;
+            sftp_target='';
+        %end;
 
         if missing(directory_path) or missing(file_name) then delete;
-
         source_type=ifc(prxmatch('/\.zip$/i',directory_path),'ZIP','DIR');
 
         if extract not in ('Y','N') then
@@ -93,7 +109,7 @@
         keep row_id directory_path file_name md5 sftp_target extract source_type rule_error;
     run;
 
-    /* 3. Hash files that already exist directly on disk. */
+    /* 3. Direct files: whole ZIPs and files beneath normal directories. */
     data work._pm_direct;
         set work._pm_manifest(where=(rule_error='' and extract='N'));
         length transfer_path $2048 transfer_name $1024 computed_md5 $32
@@ -117,7 +133,7 @@
              transfer_path transfer_name computed_md5 error_message;
     run;
 
-    /* 4. Scan each ZIP needed for extraction once. */
+    /* 4. ZIP extraction requests: scan each ZIP once. */
     proc sort data=work._pm_manifest(
         where=(rule_error='' and source_type='ZIP' and extract='Y')
         keep=directory_path
@@ -147,7 +163,6 @@
         keep directory_path member member_file scan_error;
     run;
 
-    /* Match by basename, hash every duplicate, then summarize per manifest row. */
     proc sql;
         create table work._pm_matches as
         select m.row_id, m.directory_path, m.file_name, m.sftp_target,
@@ -193,7 +208,7 @@
          group by row_id,directory_path,file_name,sftp_target,extract,source_type;
     quit;
 
-    /* Extract one representative copy after duplicate MD5s have been validated. */
+    /* Extract one copy only after duplicate members have passed MD5 validation. */
     data work._pm_extracted;
         set work._pm_zip_result;
         length transfer_path $2048 transfer_name $1024 error_message $500
@@ -217,7 +232,6 @@
              transfer_path transfer_name computed_md5 error_message;
     run;
 
-    /* Add invalid rule rows, collect all errors, and fail as one batch. */
     data work._pm_rule_errors;
         set work._pm_manifest(where=(rule_error ne ''));
         length transfer_path $2048 transfer_name $1024 computed_md5 $32 error_message $500;
@@ -249,7 +263,7 @@
         %goto cleanup;
     %end;
 
-    /* 5. Publish the SAS result and, optionally, the completed Excel workbook. */
+    /* 5. Publish the SFTP-ready SAS result. */
     data &out;
         set work._pm_results;
         md5=computed_md5;
@@ -257,15 +271,42 @@
              transfer_path transfer_name;
     run;
 
-    %if %length(%superq(result_xlsx)) %then %do;
-        proc export
-            data=&out(keep=row_id directory_path file_name md5 sftp_target extract)
-            outfile="&result_xlsx"
-            dbms=xlsx
-            replace;
-            sheet="&output_sheet";
-        run;
+    /*
+     * 6. Update only the MD5 column in the original workbook.
+     *
+     * The Windows EXCEL engine can update an existing worksheet. SCANTEXT=NO
+     * enables update access and FILELOCK=YES prevents concurrent Excel edits.
+     * Matching uses the manifest source fields, so no row-number column has to
+     * be added to the workbook.
+     */
+    options validvarname=any validmemname=extend;
+    libname _pmxls excel path="&xlsx" header=yes scanttext=no mixed=yes filelock=yes;
+    %let _excel_rc=&syslibrc;
+
+    %if &_excel_rc ne 0 %then %do;
+        %put ERROR: Cannot open the Excel workbook for MD5 update. Close the workbook and retry.;
+        %goto cleanup;
     %end;
+
+    proc sql;
+        update _pmxls."&sheet.$"n as x
+           set &_md5lit = (
+               select r.md5
+                 from &out as r
+                where strip(cats(x.&_dirlit))=r.directory_path
+                  and strip(cats(x.&_filelit))=r.file_name
+                  and upcase(substr(strip(cats(x.&_extractlit)),1,1))=r.extract
+           )
+         where exists (
+               select 1
+                 from &out as r
+                where strip(cats(x.&_dirlit))=r.directory_path
+                  and strip(cats(x.&_filelit))=r.file_name
+                  and upcase(substr(strip(cats(x.&_extractlit)),1,1))=r.extract
+         );
+    quit;
+
+    libname _pmxls clear;
 
 %cleanup:
     proc datasets library=work nolist;
