@@ -10,7 +10,7 @@ The Excel manifest is column-position driven. A typical layout is:
 |---|---|---|
 | 1 | `DIRECTORY_PATH` | Either a full path to a `.zip` file or a normal directory path |
 | 2 | `FILE_NAME` | File represented by that row |
-| 3 | `MD5` | MD5 output column |
+| 3 | `MD5` | MD5 output column updated in place |
 | 4 | `SFTP_TARGET` | Base remote SFTP directory for that file |
 | 5 | `EXTRACT` | `Y` or `N` |
 
@@ -37,8 +37,6 @@ C:\Transfer\plain_files        dm.sas7bdat       <md5>   /incoming/study3   N
 %prepare_transfer_manifest(
     xlsx=C:\Transfer\manifest.xlsx,
     sheet=Sheet1,
-    result_xlsx=C:\Transfer\manifest_md5.xlsx,
-    output_sheet=MD5_Result,
     out=work.md5_result,
     directory_col=1,
     file_col=2,
@@ -48,9 +46,9 @@ C:\Transfer\plain_files        dm.sas7bdat       <md5>   /incoming/study3   N
 );
 ```
 
-This single macro replaces the previous Excel-read, MD5, extraction, and Excel-write macros. It:
+The macro:
 
-- imports the Excel sheet;
+- reads the existing Excel sheet;
 - maps columns by their configured positions;
 - validates the manifest rules;
 - distinguishes ZIP sources from normal directories;
@@ -59,7 +57,7 @@ This single macro replaces the previous Excel-read, MD5, extraction, and Excel-w
 - accepts duplicate ZIP members only when all matching MD5 values are identical;
 - extracts one validated member to SAS `WORK` when `EXTRACT=Y`;
 - creates the SFTP-ready SAS output dataset;
-- writes the completed Excel result only after validation succeeds.
+- updates only the configured MD5 column in the original workbook after the whole batch passes validation.
 
 The output dataset contains:
 
@@ -70,15 +68,21 @@ SOURCE_TYPE | TRANSFER_PATH | TRANSFER_NAME
 
 `TRANSFER_PATH` is the actual local file that SFTP should send. For `EXTRACT=Y`, it points to the extracted temporary file in SAS `WORK`.
 
-If any row fails validation, the macro logs all detected errors and does not leave a successful output dataset behind.
+If any row fails validation, the macro logs all detected errors and does not update the workbook or leave a successful output dataset behind.
 
-`HASHING_FILE()` requires SAS 9.4M6 or later.
+### Excel update behavior
+
+The same input workbook is updated in place; no separate result workbook is created. The macro uses the Windows SAS `EXCEL` LIBNAME engine because the `XLSX` engine cannot update individual worksheet values. `SCANTEXT=NO` enables update access and `FILELOCK=YES` prevents simultaneous editing.
+
+Close the workbook in Microsoft Excel before running the SAS job. Other worksheets are left intact and only the MD5 values in the selected sheet are updated.
+
+This implementation therefore requires Windows SAS with SAS/ACCESS Interface to PC Files available. `HASHING_FILE()` requires SAS 9.4M6 or later.
 
 ## SFTP transfer
 
 `sas/sftp_upload_manifest.sas` defines `%sftp_upload_manifest()`.
 
-The macro uploads each unique resolved `TRANSFER_PATH`. The row's `SFTP_TARGET` is treated as a base remote directory. `REMOTE_DIR=` is used as a fallback base target and as the base target for the completed Excel workbook.
+The macro uploads each unique resolved `TRANSFER_PATH`. The row's `SFTP_TARGET` is treated as a base remote directory. `REMOTE_DIR=` is used as a fallback base target and as the base target for the completed manifest workbook.
 
 Every invocation receives a batch ID. By default it is generated as:
 
@@ -111,7 +115,7 @@ Example:
 ```sas
 %sftp_upload_manifest(
     data=work.md5_result,
-    excel=C:\Transfer\manifest_md5.xlsx,
+    excel=C:\Transfer\manifest.xlsx,
     host=sftp.company.com,
     user=myuserid,
     remote_dir=/incoming/study123,
@@ -139,7 +143,7 @@ On Windows, `AUTH=KEY` uses the native SAS SFTP filename engine with PuTTY-style
 
 See `example/run_transfer.sas`.
 
-The workflow now has only two public stages:
+The workflow has two public stages:
 
-1. `%prepare_transfer_manifest()` reads Excel, validates, calculates MD5, optionally extracts ZIP members, produces `work.md5_result`, and writes the completed Excel file.
-2. `%sftp_upload_manifest()` generates or accepts a batch ID and uploads the resolved files beneath their batch-specific SFTP targets.
+1. `%prepare_transfer_manifest()` reads the original Excel manifest, validates sources, calculates MD5, optionally extracts ZIP members, produces `work.md5_result`, and fills the MD5 column in that same workbook.
+2. `%sftp_upload_manifest()` generates or accepts a batch ID and uploads the resolved files plus the updated manifest beneath their batch-specific SFTP targets.
