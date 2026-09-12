@@ -4,6 +4,7 @@
 %include "../sas/sftp_upload_manifest.sas";
 
 %let manifest=C:\Transfer\manifest.xlsx;
+%let result_manifest=C:\Transfer\manifest_md5.xlsx;
 
 /*
  * Excel columns:
@@ -13,13 +14,14 @@
  *   4 SFTP_TARGET
  *   5 EXTRACT (Y/N)
  *
- * The macro reads the existing workbook, validates the files, calculates MD5,
+ * The macro reads the input workbook, validates the files, calculates MD5,
  * performs ZIP extraction when requested, creates the SFTP-ready SAS dataset,
- * and writes MD5 values back into column 3 of the same Excel sheet.
+ * and writes the completed manifest to a separate workbook.
  */
 %prepare_transfer_manifest(
     xlsx=&manifest,
     sheet=Sheet1,
+    result_xlsx=&result_manifest,
     out=work.md5_result,
     directory_col=1,
     file_col=2,
@@ -42,7 +44,7 @@ run;
  */
 %sftp_upload_manifest(
     data=work.md5_result,
-    excel=&manifest,
+    excel=&result_manifest,
     host=sftp.company.com,
     user=myuserid,
     remote_dir=/incoming/study123,
