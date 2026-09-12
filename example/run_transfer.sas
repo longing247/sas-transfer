@@ -42,14 +42,26 @@ run;
     sheet=MD5_Result
 );
 
-/* Preferred: SSH key authentication. Row SFTP_TARGET is used per file.
-   REMOTE_DIR is a fallback and is also the destination for the Excel result. */
+/*
+ * Preferred: SSH key authentication.
+ *
+ * Each run automatically receives a batch ID such as 20260913_001530.
+ * A row with SFTP_TARGET=/incoming/study123 is therefore uploaded beneath:
+ *
+ *     /incoming/study123/20260913_001530/<file>
+ *
+ * REMOTE_DIR is the fallback base target and is also the base target for the
+ * completed Excel file. The batch directory must already exist remotely.
+ *
+ * Set BATCH_ID= explicitly if an external scheduler owns the batch ID.
+ */
 %sftp_upload_manifest(
     data=work.md5_result,
     excel=&result_xlsx,
     host=sftp.company.com,
     user=myuserid,
     remote_dir=/incoming/study123,
+    batch_id=,
     auth=KEY,
     keyfile=C:\Keys\sftp_private.ppk,
     passphrase=,
