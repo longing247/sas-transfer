@@ -1,10 +1,10 @@
 /*
  * prepare_transfer_manifest.sas
  *
- * One public macro for the complete local preparation stage:
- *   Excel -> validate -> MD5 -> optional ZIP extraction -> result dataset
- *         -> update MD5 in the original Excel sheet.
+ * Excel -> validate -> MD5 -> optional ZIP extraction -> SFTP-ready dataset
+ *       -> update MD5 in the original Excel sheet.
  *
+ * Macro column arguments are Excel/SAS column positions (1, 2, 3, ...).
  * DIRECTORY_PATH may be a .zip file or a normal Windows directory.
  * EXTRACT=Y is valid only for a file inside a ZIP.
  *
@@ -38,46 +38,40 @@
         proc datasets library=&_outlib nolist; delete &_outmem; quit;
     %end;
 
-    /* 1. Read the manifest and map configured Excel columns by position. */
+    /* 1. Read Excel. The *_COL arguments are column indexes. */
     proc import datafile="&xlsx" out=work._pm_raw dbms=xlsx replace;
         %if %length(%superq(sheet)) %then %do; sheet="&sheet"; %end;
         getnames=&getnames;
     run;
 
+    /* Resolve the five indexes once; the rest of the macro uses normal names. */
     proc contents data=work._pm_raw out=work._pm_cols(keep=name varnum) noprint; run;
 
-    data _null_;
-        set work._pm_cols;
-        if varnum=&directory_col then do;
-            call symputx('_dircol',name,'L');
-            call symputx('_dirlit',nliteral(name),'L');
-        end;
-        if varnum=&file_col then do;
-            call symputx('_filecol',name,'L');
-            call symputx('_filelit',nliteral(name),'L');
-        end;
-        if varnum=&md5_col then do;
-            call symputx('_md5col',name,'L');
-            call symputx('_md5lit',nliteral(name),'L');
-        end;
-        if &sftp_target_col>0 and varnum=&sftp_target_col then
-            call symputx('_sftpcol',name,'L');
-        if varnum=&extract_col then do;
-            call symputx('_extractcol',name,'L');
-            call symputx('_extractlit',nliteral(name),'L');
-        end;
-    run;
+    proc sql noprint;
+        select name, nliteral(name) into :_dircol trimmed, :_dirlit trimmed
+          from work._pm_cols where varnum=&directory_col;
+        select name, nliteral(name) into :_filecol trimmed, :_filelit trimmed
+          from work._pm_cols where varnum=&file_col;
+        select name, nliteral(name) into :_md5col trimmed, :_md5lit trimmed
+          from work._pm_cols where varnum=&md5_col;
+        select name, nliteral(name) into :_extractcol trimmed, :_extractlit trimmed
+          from work._pm_cols where varnum=&extract_col;
+        %if &sftp_target_col>0 %then %do;
+            select name into :_sftpcol trimmed
+              from work._pm_cols where varnum=&sftp_target_col;
+        %end;
+    quit;
 
     %if not %length(%superq(_dircol)) or
         not %length(%superq(_filecol)) or
         not %length(%superq(_md5col)) or
         not %length(%superq(_extractcol)) or
         (&sftp_target_col>0 and not %length(%superq(_sftpcol))) %then %do;
-        %put ERROR: One or more requested Excel column numbers do not exist.;
+        %put ERROR: One or more requested Excel column indexes do not exist.;
         %goto cleanup;
     %end;
 
-    /* 2. Normalize rows and validate the source/extraction rules. */
+    /* 2. Normalize rows and validate source/extraction rules. */
     data work._pm_manifest;
         set work._pm_raw;
         length directory_path $1024 file_name $1024 md5 $32
@@ -109,7 +103,7 @@
         keep row_id directory_path file_name md5 sftp_target extract source_type rule_error;
     run;
 
-    /* 3. Direct files: whole ZIPs and files beneath normal directories. */
+    /* 3. Hash direct files: whole ZIPs and files beneath normal directories. */
     data work._pm_direct;
         set work._pm_manifest(where=(rule_error='' and extract='N'));
         length transfer_path $2048 transfer_name $1024 computed_md5 $32
@@ -208,7 +202,7 @@
          group by row_id,directory_path,file_name,sftp_target,extract,source_type;
     quit;
 
-    /* Extract one copy only after duplicate members have passed MD5 validation. */
+    /* Extract one copy only after duplicate members pass MD5 validation. */
     data work._pm_extracted;
         set work._pm_zip_result;
         length transfer_path $2048 transfer_name $1024 error_message $500
@@ -271,14 +265,7 @@
              transfer_path transfer_name;
     run;
 
-    /*
-     * 6. Update only the MD5 column in the original workbook.
-     *
-     * The Windows EXCEL engine can update an existing worksheet. SCANTEXT=NO
-     * enables update access and FILELOCK=YES prevents concurrent Excel edits.
-     * Matching uses the manifest source fields, so no row-number column has to
-     * be added to the workbook.
-     */
+    /* 6. Update only the MD5 column in the original workbook. */
     options validvarname=any validmemname=extend;
     libname _pmxls excel path="&xlsx" header=yes scanttext=no mixed=yes filelock=yes;
     %let _excel_rc=&syslibrc;
