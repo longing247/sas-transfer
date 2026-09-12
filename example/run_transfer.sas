@@ -5,18 +5,15 @@
 
 %let manifest=C:\Transfer\manifest.xlsx;
 %let result_manifest=C:\Transfer\manifest_md5.xlsx;
+%let batch_id=20260913_001530;
 
 /*
- * Excel columns:
+ * Input Excel columns:
  *   1 DIRECTORY_PATH
  *   2 FILE_NAME
- *   3 MD5
+ *   3 MD5 (ignored on input; recalculated on output)
  *   4 SFTP_TARGET
  *   5 EXTRACT (Y/N)
- *
- * The macro reads the input workbook, validates the files, calculates MD5,
- * performs ZIP extraction when requested, creates the SFTP-ready SAS dataset,
- * and writes the completed manifest to a separate workbook.
  */
 %prepare_transfer_manifest(
     xlsx=&manifest,
@@ -25,7 +22,6 @@
     out=work.md5_result,
     directory_col=1,
     file_col=2,
-    md5_col=3,
     sftp_target_col=4,
     extract_col=5
 );
@@ -34,13 +30,9 @@ proc print data=work.md5_result noobs;
 run;
 
 /*
- * Each upload run receives a batch ID such as 20260913_001530.
- * A row with SFTP_TARGET=/incoming/study123 is uploaded beneath:
- *
- *     /incoming/study123/20260913_001530/<file>
- *
- * REMOTE_DIR is the fallback base target and the base target for the completed
- * manifest workbook. The batch directory must already exist remotely.
+ * Every data row uses its own SFTP_TARGET.
+ * REMOTE_DIR is used only for the completed manifest workbook.
+ * Remote batch directories must already exist.
  */
 %sftp_upload_manifest(
     data=work.md5_result,
@@ -48,8 +40,7 @@ run;
     host=sftp.company.com,
     user=myuserid,
     remote_dir=/incoming/study123,
-    batch_id=,
-    auth=KEY,
+    batch_id=&batch_id,
     keyfile=C:\Keys\sftp_private.ppk,
     passphrase=,
     port=22,
