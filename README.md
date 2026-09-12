@@ -1,102 +1,83 @@
 # sas-transfer
 
-SAS utilities for reading a transfer manifest, validating files inside ZIP archives with MD5, writing validation results, and uploading the validated package to SFTP.
+SAS utilities for reading a transfer manifest, calculating MD5 values for local files or ZIP members, optionally extracting ZIP members, writing the result, and uploading the resolved files to SFTP.
 
 ## Manifest format
 
-The input Excel workbook is expected to contain:
+The Excel manifest is column-position driven. A typical layout is:
 
-| Column | Meaning |
-|---|---|
-| 1 | Full Windows path to a ZIP file |
-| 2 | File name to locate inside that ZIP |
+| Column | Field | Meaning |
+|---|---|---|
+| 1 | `DIRECTORY_PATH` | Either a full path to a `.zip` file or a normal directory path |
+| 2 | `FILE_NAME` | File represented by that row |
+| 3 | `MD5` | MD5 output column |
+| 4 | `SFTP_TARGET` | Remote SFTP directory for that file |
+| 5 | `EXTRACT` | `Y` or `N` |
 
-The target file may be located in any nested directory inside the ZIP.
+The source rules are:
+
+1. **ZIP path + `EXTRACT=N`** — `FILE_NAME` must be the basename of the ZIP. The MD5 is calculated on the ZIP file itself and the ZIP is transferred.
+2. **ZIP path + `EXTRACT=Y`** — `FILE_NAME` identifies a file inside the ZIP. Its MD5 is calculated directly from the ZIP member, that member is extracted to the SAS WORK area, and only the extracted file is transferred.
+3. **Directory path + `EXTRACT=N`** — `FILE_NAME` identifies a file beneath the directory. That file is hashed and transferred.
+4. **Directory path + `EXTRACT=Y`** — invalid and raises an error.
 
 Example:
 
 ```text
-C:\Transfer\study001.zip    dm.sas7bdat
-C:\Transfer\study001.zip    ae.sas7bdat
-C:\Transfer\study002.zip    report.pdf
+C:\Transfer\study001.zip       study001.zip      <md5>   /incoming/study1   N
+C:\Transfer\study002.zip       report.pdf        <md5>   /incoming/study2   Y
+C:\Transfer\plain_files        dm.sas7bdat       <md5>   /incoming/study3   N
 ```
 
-## Excel input and output
+## Excel input/output
 
-`sas/excel_io.sas` defines two reusable macros.
-
-### `%read_manifest_excel()`
-
-Reads the first two Excel columns and converts them into a standard SAS dataset with:
-
-```text
-ROW_ID | ZIP_PATH | FILE_NAME
-```
+`sas/excel_io.sas` defines `%read_manifest_excel()` and `%write_manifest_excel()`.
 
 Example:
 
 ```sas
-%include "sas/excel_io.sas";
-
 %read_manifest_excel(
     xlsx=C:\Transfer\manifest.xlsx,
     sheet=Sheet1,
-    out=work.manifest
+    out=work.manifest,
+    directory_col=1,
+    file_col=2,
+    md5_col=3,
+    sftp_target_col=4,
+    extract_col=5
 );
 ```
 
-### `%write_manifest_excel()`
+The normalized SAS dataset contains:
 
-Writes a SAS dataset to an Excel workbook.
-
-Example:
-
-```sas
-%write_manifest_excel(
-    data=work.md5_result,
-    xlsx=C:\Transfer\manifest_md5.xlsx,
-    sheet=MD5_Result
-);
+```text
+ROW_ID | DIRECTORY_PATH | FILE_NAME | MD5 | SFTP_TARGET | EXTRACT
 ```
 
-Excel I/O is deliberately separated from ZIP/MD5 validation so the validation logic can also be used with SAS datasets created by other processes.
+`%write_manifest_excel()` writes only these manifest-facing fields back to Excel. Internal transfer paths used for extracted ZIP members are not written to the workbook.
 
-## ZIP/MD5 validation
+## Source MD5 preparation
 
-`sas/zip_md5_excel.sas` now defines `%zip_md5()`.
-
-The macro no longer reads or writes Excel. It accepts a SAS input dataset containing `ZIP_PATH` and `FILE_NAME` and produces a SAS result dataset.
-
-It:
-
-- scans each distinct ZIP only once;
-- searches nested ZIP paths by basename;
-- calculates MD5 directly from ZIP members without extracting them;
-- calculates MD5 for every matching instance when the same basename appears multiple times;
-- accepts duplicate instances only when all MD5 values are identical.
-
-Example:
+`sas/source_md5.sas` defines `%source_md5()`.
 
 ```sas
-%zip_md5(
+%source_md5(
     data=work.manifest,
     out=work.md5_result
 );
 ```
 
-The output contains:
+The macro determines whether `DIRECTORY_PATH` points to a ZIP or to a normal directory and applies the rules above.
+
+For extracted ZIP members, nested ZIP folders are searched by basename. If the same basename appears multiple times, every matching member is hashed. Identical duplicates are accepted; duplicates with different MD5 values raise an error.
+
+On success the result includes the manifest fields plus internal fields used by SFTP:
 
 ```text
-ROW_ID | ZIP_PATH | FILE_NAME | MD5 | STATUS | MATCH_COUNT
+SOURCE_TYPE | TRANSFER_PATH | TRANSFER_NAME
 ```
 
-Output statuses:
-
-- `OK` — exactly one matching ZIP member was found and hashed;
-- `OK_IDENTICAL_DUPLICATES` — multiple matching members were found and all have the same MD5;
-- `NOT_FOUND` — no member with the requested basename was found;
-- `MD5_MISMATCH` — multiple matching members have different content;
-- `HASH_ERROR` — one or more matching members could not be hashed.
+`TRANSFER_PATH` is the actual local file SAS should send. For `EXTRACT=Y`, this is the extracted temporary file in the SAS WORK directory.
 
 `HASHING_FILE()` requires SAS 9.4M6 or later.
 
@@ -104,13 +85,7 @@ Output statuses:
 
 `sas/sftp_upload_manifest.sas` defines `%sftp_upload_manifest()`.
 
-The macro refuses to upload anything unless every MD5 validation row has status `OK` or `OK_IDENTICAL_DUPLICATES`.
-
-When validation succeeds, it uploads every distinct ZIP file appearing in the validation dataset plus the Excel result file.
-
-### SSH key authentication — preferred
-
-On Windows, native SAS SFTP uses the PuTTY/PSFTP stack. A PuTTY `.ppk` private key can be supplied with `AUTH=KEY`.
+The macro uploads each unique resolved `TRANSFER_PATH`. The remote directory comes from that row's `SFTP_TARGET`. `REMOTE_DIR=` is used as a fallback and as the target directory for the result Excel workbook.
 
 ```sas
 %sftp_upload_manifest(
@@ -121,27 +96,20 @@ On Windows, native SAS SFTP uses the PuTTY/PSFTP stack. A PuTTY `.ppk` private k
     remote_dir=/incoming/study123,
     auth=KEY,
     keyfile=C:\Keys\sftp_private.ppk,
-    passphrase=,
     port=22,
     out=work.upload_log
 );
 ```
 
-### Username/password authentication
+On Windows, `AUTH=KEY` uses the native SAS SFTP filename engine with PuTTY-style key options. `AUTH=PASSWORD` uses an external `psftp.exe` process and requires XCMD permission.
 
-`AUTH=PASSWORD` uses an external PuTTY `psftp.exe` process and therefore requires SAS `XCMD` permission and PSFTP installed on the SAS host.
+## End-to-end workflow
 
-**Security:** PSFTP's `-pw` option places the password in the process command line. Use SSH key authentication for unattended or production transfers unless password mode is explicitly permitted by local security policy.
+See `example/run_transfer.sas`.
 
-## End-to-end example
+The workflow is:
 
-See [`example/run_transfer.sas`](example/run_transfer.sas).
-
-The workflow is now separated into four stages:
-
-1. `%read_manifest_excel()` reads the Excel manifest into `work.manifest`.
-2. `%zip_md5()` validates the requested files and calculates MD5 values.
-3. `%write_manifest_excel()` writes the validation result to a new Excel file.
-4. `%sftp_upload_manifest()` checks that validation succeeded and uploads the unique ZIP files plus the result Excel file.
-
-This separation keeps external file I/O independent from the ZIP validation logic and makes each macro reusable on its own.
+1. `%read_manifest_excel()` reads and normalizes the Excel manifest.
+2. `%source_md5()` validates each row, calculates MD5, and prepares the actual transfer file.
+3. `%write_manifest_excel()` writes the completed manifest.
+4. `%sftp_upload_manifest()` uploads each resolved file to its row-level SFTP target and optionally uploads the completed Excel file.
