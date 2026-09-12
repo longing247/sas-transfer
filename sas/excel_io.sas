@@ -64,7 +64,11 @@
 %mend read_manifest_excel;
 
 %macro write_manifest_excel(data=, xlsx=, sheet=MD5_Result);
-    proc export data=&data outfile="&xlsx" dbms=xlsx replace;
+    proc export
+        data=&data(keep=row_id directory_path file_name md5 sftp_target extract)
+        outfile="&xlsx"
+        dbms=xlsx
+        replace;
         sheet="&sheet";
     run;
 %mend write_manifest_excel;
