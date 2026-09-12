@@ -12,14 +12,13 @@ The input Excel layout is intentionally simple and column-position driven:
 | 2 | `FILE_NAME` | File represented by the row |
 | 3 | `MD5` | Ignored on input; recalculated in the result workbook |
 | 4 | `SFTP_TARGET` | Required remote base directory for this file |
-| 5 | `EXTRACT` | `Y` or `N` |
+| 5 | `EXTRACT` | May remain in Excel, but is ignored |
 
-Source rules:
+ZIP behavior is inferred automatically:
 
-1. **ZIP + `EXTRACT=N`** — `FILE_NAME` must equal the ZIP basename. Hash and transfer the ZIP.
-2. **ZIP + `EXTRACT=Y`** — find `FILE_NAME` inside the ZIP, hash it, extract it to SAS `WORK`, and transfer only that file.
-3. **Directory + `EXTRACT=N`** — hash and transfer `DIRECTORY_PATH\FILE_NAME`.
-4. **Directory + `EXTRACT=Y`** — invalid.
+1. If `DIRECTORY_PATH` points to a ZIP and `FILE_NAME` equals the ZIP basename, hash and transfer the ZIP itself.
+2. If `DIRECTORY_PATH` points to a ZIP and `FILE_NAME` is a different filename, find that member in the ZIP, validate duplicate matches by MD5, extract it to SAS `WORK`, and transfer the extracted file.
+3. Otherwise, treat `DIRECTORY_PATH` as a normal directory and hash/transfer `DIRECTORY_PATH\FILE_NAME`.
 
 Duplicate ZIP basenames are accepted only when every matching member has the same MD5.
 
@@ -35,8 +34,7 @@ Duplicate ZIP basenames are accepted only when every matching member has the sam
     out=work.md5_result,
     directory_col=1,
     file_col=2,
-    sftp_target_col=4,
-    extract_col=5
+    sftp_target_col=4
 );
 ```
 
@@ -45,25 +43,27 @@ Manifest processing is row based. Each Excel row is validated and processed inde
 ```text
 row
  -> validate
- -> normal file / whole ZIP: calculate MD5
- -> ZIP extraction: scan matching members, validate duplicate MD5, extract
+ -> directory file / whole ZIP: calculate MD5
+ -> ZIP member: find, validate duplicate MD5, extract
  -> result row
 ```
 
 This intentionally favors readable control flow over scanning a ZIP only once. If several rows reference the same ZIP, the ZIP can be opened once per row. For ordinary transfer manifests this is usually a worthwhile tradeoff.
 
-The implementation keeps only the flexibility needed by the workflow: headers are required, the four input fields are selected by column index, `SFTP_TARGET` is mandatory, MD5 is always recalculated, and the completed manifest is written to a separate workbook with `PROC EXPORT`.
+The `EXTRACT` column is no longer part of the processing logic and `extract_col=` has been removed. The column may remain in an existing workbook without affecting the result.
+
+MD5 values are taken directly from `HASHING_FILE('MD5', ...)`; no lowercase conversion is applied.
 
 The SFTP-ready dataset contains:
 
 ```text
-ROW_ID | DIRECTORY_PATH | FILE_NAME | MD5 | SFTP_TARGET | EXTRACT |
+ROW_ID | DIRECTORY_PATH | FILE_NAME | MD5 | SFTP_TARGET |
 SOURCE_TYPE | TRANSFER_PATH | TRANSFER_NAME
 ```
 
 During processing each row also has `STATUS` and `MESSAGE`. If any row has an error, all errors are logged and the complete preparation step fails. A successful output dataset and result workbook are published only when every row succeeds.
 
-For `EXTRACT=Y`, `TRANSFER_PATH` points to the extracted temporary file in SAS `WORK`.
+For a ZIP member, `TRANSFER_PATH` points to the extracted temporary file in SAS `WORK`.
 
 `HASHING_FILE()` requires SAS 9.4M6 or later.
 
@@ -111,5 +111,5 @@ See `example/run_transfer.sas`.
 
 The workflow has two public stages:
 
-1. `%prepare_transfer_manifest()` processes the manifest row by row, calculates MD5, optionally extracts ZIP members, creates `work.md5_result`, and writes the completed manifest workbook.
+1. `%prepare_transfer_manifest()` processes the manifest row by row, infers whether ZIP extraction is needed, calculates MD5, creates `work.md5_result`, and writes the completed manifest workbook.
 2. `%sftp_upload_manifest()` uploads the resolved files and completed manifest using a caller-supplied batch ID.
