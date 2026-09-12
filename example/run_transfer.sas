@@ -13,7 +13,11 @@
  *   2 FILE_NAME
  *   3 MD5 (ignored on input; recalculated on output)
  *   4 SFTP_TARGET
- *   5 EXTRACT (Y/N)
+ *   5 EXTRACT (may remain in Excel, but is ignored)
+ *
+ * ZIP behavior is inferred automatically:
+ *   ZIP path + FILE_NAME equal to ZIP basename -> transfer whole ZIP
+ *   ZIP path + another FILE_NAME              -> extract that member
  */
 %prepare_transfer_manifest(
     xlsx=&manifest,
@@ -22,8 +26,7 @@
     out=work.md5_result,
     directory_col=1,
     file_col=2,
-    sftp_target_col=4,
-    extract_col=5
+    sftp_target_col=4
 );
 
 proc print data=work.md5_result noobs;
