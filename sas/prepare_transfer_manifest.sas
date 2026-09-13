@@ -5,14 +5,15 @@
  *   Excel -> validate each row -> MD5 -> inferred ZIP extraction
  *         -> SFTP-ready dataset -> formatted result workbook.
  *
- * The result workbook is a byte-for-byte copy of the input workbook first.
- * SAS then updates only the configured MD5 cells through LIBNAME EXCEL, so
- * the workbook layout, formatting and other worksheets are preserved.
- *
- * Any EXTRACT column present in Excel is preserved but ignored.
- * HASHING_FILE() requires SAS 9.4M6+.
- * LIBNAME EXCEL requires SAS/ACCESS to PC Files on Windows.
+ * The result workbook is a copy of the input workbook. SAS then updates only
+ * the configured MD5 cells through LIBNAME EXCEL so formatting is preserved.
  */
+
+%macro _pm_cleanup;
+    proc datasets library=work nolist;
+        delete _pm_:;
+    quit;
+%mend _pm_cleanup;
 
 %macro _pm_resolve_columns(data=, directory_col=, file_col=, md5_col=, sftp_target_col=);
     proc contents data=&data out=work._pm_cols(keep=name varnum) noprint; run;
@@ -34,19 +35,13 @@
     md5_col=6,
     sftp_target_col=7
 );
-    %local _dircol _filecol _md5col _sftpcol _errors _outlib _outmem
-           _copy_error _xldirref _xlfileref _xlmd5ref _xlmd5type;
+    %local _dircol _filecol _md5col _sftpcol _errors _copy_error
+           _xldirref _xlfileref _xlmd5ref _xlmd5type;
 
-    /* Never leave a previous successful SAS result after a failed run. */
-    %let _outlib=%scan(&out,1,.);
-    %let _outmem=%scan(&out,2,.);
-    %if %length(&_outmem)=0 %then %do;
-        %let _outmem=&_outlib;
-        %let _outlib=WORK;
-    %end;
-    %if %sysfunc(exist(&out)) %then %do;
-        proc datasets library=&_outlib nolist; delete &_outmem; quit;
-    %end;
+    /* Remove the previous successful result. */
+    proc datasets library=work nolist;
+        delete md5_result;
+    quit;
 
     proc import datafile="&xlsx" out=work._pm_raw dbms=xlsx replace;
         sheet="&sheet";
@@ -91,10 +86,10 @@
 
         status='OK';
         message='';
-        transfer_name=scan(file_name,-1,'\/');
+        transfer_name=scan(file_name,-1,'\\/');
         source_type=ifc(prxmatch('/\.zip$/i',directory_path),'ZIP','DIR');
         whole_zip=(source_type='ZIP' and
-                   upcase(transfer_name)=upcase(scan(directory_path,-1,'\/')));
+                   upcase(transfer_name)=upcase(scan(directory_path,-1,'\\/')));
 
         if missing(directory_path) then do;
             status='ERROR'; message='DIRECTORY_PATH is required.';
@@ -106,10 +101,9 @@
             status='ERROR'; message='SFTP_TARGET is required.';
         end;
 
-        /* Normal file or whole ZIP. */
         if status='OK' and (source_type='DIR' or whole_zip) then do;
             if whole_zip then transfer_path=directory_path;
-            else transfer_path=cats(prxchange('s/[\\\/]+$//',1,directory_path),'\',file_name);
+            else transfer_path=cats(prxchange('s/[\\\\\/]+$//',1,directory_path),'\',file_name);
 
             fileref='srcfile';
             rc=filename(fileref,transfer_path);
@@ -128,7 +122,6 @@
             rc=filename(fileref);
         end;
 
-        /* ZIP containing the requested file: find, hash and extract it. */
         if status='OK' and source_type='ZIP' and not whole_zip then do;
             match_count=0;
             first_md5='';
@@ -204,7 +197,6 @@
              transfer_path transfer_name status message;
     run;
 
-    /* Fail the complete batch if any row failed. */
     data _null_;
         set work._pm_results end=eof;
         retain errors 0;
@@ -222,16 +214,12 @@
         %goto cleanup;
     %end;
 
-    /* Canonical SAS dataset used by the SFTP step. */
     data &out;
         set work._pm_results;
         drop status message;
     run;
 
-    /*
-     * Preserve the workbook exactly: copy the original first, then change only
-     * the MD5 cells in the copy. The workbook must be closed in Excel.
-     */
+    /* Copy the original workbook, then update only its MD5 cells. */
     %let _copy_error=0;
     filename _pmsrc "&xlsx" recfm=n;
     filename _pmdst "&result_xlsx" recfm=n;
@@ -252,16 +240,13 @@
 
     %if &_copy_error %then %goto cleanup;
 
-    /* SCANTEXT=NO enables updates; FILELOCK=YES prevents concurrent Excel use. */
     libname _pmxl excel path="&result_xlsx" scantext=no filelock=yes;
 
     %if %sysfunc(libref(_pmxl)) ne 0 %then %do;
         %put ERROR: Cannot open the copied workbook with the EXCEL LIBNAME engine.;
-        %put ERROR: Ensure SAS/ACCESS to PC Files is available and the workbook is closed.;
         %goto delete_result;
     %end;
 
-    /* Resolve column names again through the EXCEL engine by position. */
     proc contents data=_pmxl."&sheet.$"n
         out=work._pm_xlcols(keep=name varnum type) noprint;
     run;
@@ -284,24 +269,16 @@
     %if not %length(%superq(_xldirref)) or
         not %length(%superq(_xlfileref)) or
         not %length(%superq(_xlmd5ref)) %then %do;
-        %put ERROR: Cannot resolve Excel columns in the copied workbook.;
         libname _pmxl clear;
         %goto delete_result;
     %end;
 
-    /* MD5 is hexadecimal text; the template MD5 column must therefore be text. */
     %if %superq(_xlmd5type) ne 2 %then %do;
-        %put ERROR: The Excel MD5 column is not recognized as character/text.;
-        %put ERROR: Format the MD5 column as Text in the manifest template and retry.;
+        %put ERROR: Format the Excel MD5 column as Text and retry.;
         libname _pmxl clear;
         %goto delete_result;
     %end;
 
-    /*
-     * Update only the MD5 cells. DIRECTORY_PATH + FILE_NAME identify the source
-     * represented by a row. Duplicate rows are safe because the same source has
-     * the same calculated MD5.
-     */
     filename _pmsql temp;
     data _null_;
         set work._pm_results end=eof;
@@ -313,14 +290,12 @@
         qmd5=tranwrd(strip(md5),"'","''");
 
         if _n_=1 then put 'proc sql;';
-
         sql_line=cats(
             'update _pmxl."', "&sheet", '$"n set ', "&_xlmd5ref", "='", qmd5,
             "' where ", "&_xldirref", "='", qdir,
             "' and ", "&_xlfileref", "='", qfile, "';"
         );
         put sql_line;
-
         if eof then put 'quit;';
     run;
 
@@ -328,11 +303,7 @@
     filename _pmsql clear;
     libname _pmxl clear;
 
-    %if &sqlrc ne 0 %then %do;
-        %put ERROR: One or more MD5 updates to the copied workbook failed.;
-        %goto delete_result;
-    %end;
-
+    %if &sqlrc ne 0 %then %goto delete_result;
     %goto cleanup;
 
 %delete_result:
@@ -343,7 +314,5 @@
     filename _pmdel clear;
 
 %cleanup:
-    proc datasets library=work nolist;
-        delete _pm_:;
-    quit;
+    %_pm_cleanup;
 %mend prepare_transfer_manifest;
