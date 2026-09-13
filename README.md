@@ -13,7 +13,7 @@ The current manifest uses these relevant column positions:
 | 6 | `MD5` | Replaced with the newly calculated MD5 in the result workbook |
 | 7 | `SFTP_TARGET` | Required remote base directory for this file |
 
-All other input columns are preserved in the result workbook. An `EXTRACT` column may remain in the workbook, but it is ignored by the processing logic.
+All other input columns are preserved. An `EXTRACT` column may remain in the workbook, but it is ignored by the processing logic.
 
 ZIP behavior is inferred automatically:
 
@@ -50,9 +50,24 @@ row
  -> result row
 ```
 
-The result workbook preserves the original manifest column order and values. The configured `MD5` column is the only manifest field replaced by the processing step. This is done by rebuilding the output sheet from the imported input columns and substituting the calculated 32-character MD5 value at `MD5_COL=`.
+### Format-preserving result workbook
 
-This also avoids a common import problem where an empty MD5 column may be interpreted as numeric: the result MD5 column is explicitly written as character length 32.
+The result workbook is no longer rebuilt with `PROC EXPORT`.
+
+After all manifest rows validate successfully, SAS:
+
+1. copies the original workbook to `RESULT_XLSX=`;
+2. opens the copied workbook with the Windows `LIBNAME EXCEL` engine;
+3. resolves the configured columns by position;
+4. updates only the MD5 cells in the copied sheet.
+
+Because the original workbook is copied first and only cell values in the MD5 column are updated, the workbook keeps its existing formatting, column widths, formulas outside the MD5 cells, filters, frozen panes, other worksheets, and other workbook structure.
+
+`SCANTEXT=NO` is used because the EXCEL engine requires it for updates. `FILELOCK=YES` is used to prevent simultaneous editing by Excel or another application. The workbook should therefore be closed in Excel while the macro runs.
+
+The template MD5 column must be recognized by the EXCEL engine as text/character because MD5 is a 32-character hexadecimal value. If the MD5 column is inferred as numeric, the macro fails and removes the result copy rather than leaving a partially updated workbook. Formatting that column as **Text** in the Excel template is recommended.
+
+This output method requires SAS/ACCESS Interface to PC Files and the Windows EXCEL LIBNAME engine.
 
 MD5 values are taken directly from `HASHING_FILE('MD5', ...)`; no lowercase conversion is applied.
 
@@ -113,5 +128,5 @@ See `example/run_transfer.sas`.
 
 The workflow has two public stages:
 
-1. `%prepare_transfer_manifest()` processes the manifest row by row, infers whether ZIP extraction is needed, calculates MD5, creates `work.md5_result`, and writes a result workbook with the same manifest column structure.
+1. `%prepare_transfer_manifest()` processes the manifest row by row, infers whether ZIP extraction is needed, calculates MD5, creates `work.md5_result`, copies the original workbook, and updates only its MD5 cells through `LIBNAME EXCEL`.
 2. `%sftp_upload_manifest()` uploads the resolved files and completed manifest using a caller-supplied batch ID.
