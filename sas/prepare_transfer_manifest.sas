@@ -36,7 +36,7 @@
     sftp_target_col=7
 );
     %local _dircol _filecol _md5col _sftpcol _errors _copy_error
-           _xldirref _xlfileref _xlmd5ref _xlmd5type;
+           _xlmd5ref _xlmd5type;
 
     /* If no result name is supplied, add _md5_yyyymmdd before .xlsx. */
     %if not %length(%superq(result_xlsx)) %then
@@ -255,24 +255,15 @@
         out=work._pm_xlcols(keep=name varnum type) noprint;
     run;
 
-    %let _xldirref=;
-    %let _xlfileref=;
-    %let _xlmd5ref=;
-    %let _xlmd5type=;
-
     data _null_;
         set work._pm_xlcols;
-        if varnum=&directory_col then call symputx('_xldirref',nliteral(name),'L');
-        if varnum=&file_col then call symputx('_xlfileref',nliteral(name),'L');
         if varnum=&md5_col then do;
             call symputx('_xlmd5ref',nliteral(name),'L');
             call symputx('_xlmd5type',type,'L');
         end;
     run;
 
-    %if not %length(%superq(_xldirref)) or
-        not %length(%superq(_xlfileref)) or
-        not %length(%superq(_xlmd5ref)) %then %do;
+    %if not %length(%superq(_xlmd5ref)) %then %do;
         libname _pmxl clear;
         %goto delete_result;
     %end;
@@ -283,31 +274,20 @@
         %goto delete_result;
     %end;
 
-    filename _pmsql temp;
+    /* Update only the MD5 cell for each original manifest row. */
     data _null_;
-        set work._pm_results end=eof;
-        file _pmsql lrecl=32767;
-        length qdir qfile qmd5 $4096 sql_line $32767;
-
-        qdir=tranwrd(strip(directory_path),"'","''");
-        qfile=tranwrd(strip(file_name),"'","''");
-        qmd5=tranwrd(strip(md5),"'","''");
-
-        if _n_=1 then put 'proc sql;';
-        sql_line=cats(
-            'update _pmxl."', "&sheet", '$"n set ', "&_xlmd5ref", "='", qmd5,
-            "' where ", "&_xldirref", "='", qdir,
-            "' and ", "&_xlfileref", "='", qfile, "';"
-        );
-        put sql_line;
-        if eof then put 'quit;';
+        set work._pm_results(keep=row_id md5 rename=(md5=_new_md5));
+        modify _pmxl."&sheet.$"n point=row_id;
+        &_xlmd5ref=_new_md5;
+        replace;
     run;
 
-    %include _pmsql;
-    filename _pmsql clear;
-    libname _pmxl clear;
+    %if &syserr>4 %then %do;
+        libname _pmxl clear;
+        %goto delete_result;
+    %end;
 
-    %if &sqlrc ne 0 %then %goto delete_result;
+    libname _pmxl clear;
     %goto cleanup;
 
 %delete_result:
