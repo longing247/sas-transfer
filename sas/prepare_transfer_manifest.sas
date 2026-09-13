@@ -38,6 +38,10 @@
     %local _dircol _filecol _md5col _sftpcol _errors _copy_error
            _xldirref _xlfileref _xlmd5ref _xlmd5type;
 
+    /* If no result name is supplied, add _md5_yyyymmdd before .xlsx. */
+    %if not %length(%superq(result_xlsx)) %then
+        %let result_xlsx=%sysfunc(prxchange(s/\.xlsx$/_md5_%sysfunc(today(),yymmddn8.).xlsx/i,1,%superq(xlsx)));
+
     /* Remove the previous successful result. */
     proc datasets library=work nolist;
         delete md5_result;
@@ -86,10 +90,10 @@
 
         status='OK';
         message='';
-        transfer_name=scan(file_name,-1,'\\/');
+        transfer_name=scan(file_name,-1,'\/');
         source_type=ifc(prxmatch('/\.zip$/i',directory_path),'ZIP','DIR');
         whole_zip=(source_type='ZIP' and
-                   upcase(transfer_name)=upcase(scan(directory_path,-1,'\\/')));
+                   upcase(transfer_name)=upcase(scan(directory_path,-1,'\/')));
 
         if missing(directory_path) then do;
             status='ERROR'; message='DIRECTORY_PATH is required.';
@@ -103,7 +107,7 @@
 
         if status='OK' and (source_type='DIR' or whole_zip) then do;
             if whole_zip then transfer_path=directory_path;
-            else transfer_path=cats(prxchange('s/[\\\\\/]+$//',1,directory_path),'\',file_name);
+            else transfer_path=cats(prxchange('s/[\\\/]+$//',1,directory_path),'\',file_name);
 
             fileref='srcfile';
             rc=filename(fileref,transfer_path);
