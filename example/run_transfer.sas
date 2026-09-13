@@ -8,16 +8,14 @@
 %let batch_id=20260913_001530;
 
 /*
- * Input Excel columns:
+ * Actual manifest positions:
  *   1 DIRECTORY_PATH
- *   2 FILE_NAME
- *   3 MD5 (ignored on input; recalculated on output)
- *   4 SFTP_TARGET
- *   5 EXTRACT (may remain in Excel, but is ignored)
+ *   4 FILE_NAME
+ *   6 MD5          (replaced with calculated MD5 in result workbook)
+ *   7 SFTP_TARGET
  *
- * ZIP behavior is inferred automatically:
- *   ZIP path + FILE_NAME equal to ZIP basename -> transfer whole ZIP
- *   ZIP path + another FILE_NAME              -> extract that member
+ * Other columns, including any EXTRACT column, are preserved in the result
+ * workbook but are not used by the processing logic.
  */
 %prepare_transfer_manifest(
     xlsx=&manifest,
@@ -25,8 +23,9 @@
     result_xlsx=&result_manifest,
     out=work.md5_result,
     directory_col=1,
-    file_col=2,
-    sftp_target_col=4
+    file_col=4,
+    md5_col=6,
+    sftp_target_col=7
 );
 
 proc print data=work.md5_result noobs;
