@@ -4,15 +4,16 @@ SAS utilities for preparing a transfer manifest and uploading resolved files to 
 
 ## Manifest format
 
-The input Excel layout is intentionally simple and column-position driven:
+The current manifest uses these relevant column positions:
 
 | Column | Field | Meaning |
 |---|---|---|
 | 1 | `DIRECTORY_PATH` | Full path to a `.zip` file or normal directory |
-| 2 | `FILE_NAME` | File represented by the row |
-| 3 | `MD5` | Ignored on input; recalculated in the result workbook |
-| 4 | `SFTP_TARGET` | Required remote base directory for this file |
-| 5 | `EXTRACT` | May remain in Excel, but is ignored |
+| 4 | `FILE_NAME` | File represented by the row |
+| 6 | `MD5` | Replaced with the newly calculated MD5 in the result workbook |
+| 7 | `SFTP_TARGET` | Required remote base directory for this file |
+
+All other input columns are preserved in the result workbook. An `EXTRACT` column may remain in the workbook, but it is ignored by the processing logic.
 
 ZIP behavior is inferred automatically:
 
@@ -33,8 +34,9 @@ Duplicate ZIP basenames are accepted only when every matching member has the sam
     result_xlsx=C:\Transfer\manifest_md5.xlsx,
     out=work.md5_result,
     directory_col=1,
-    file_col=2,
-    sftp_target_col=4
+    file_col=4,
+    md5_col=6,
+    sftp_target_col=7
 );
 ```
 
@@ -48,13 +50,13 @@ row
  -> result row
 ```
 
-This intentionally favors readable control flow over scanning a ZIP only once. If several rows reference the same ZIP, the ZIP can be opened once per row. For ordinary transfer manifests this is usually a worthwhile tradeoff.
+The result workbook preserves the original manifest column order and values. The configured `MD5` column is the only manifest field replaced by the processing step. This is done by rebuilding the output sheet from the imported input columns and substituting the calculated 32-character MD5 value at `MD5_COL=`.
 
-The `EXTRACT` column is no longer part of the processing logic and `extract_col=` has been removed. The column may remain in an existing workbook without affecting the result.
+This also avoids a common import problem where an empty MD5 column may be interpreted as numeric: the result MD5 column is explicitly written as character length 32.
 
 MD5 values are taken directly from `HASHING_FILE('MD5', ...)`; no lowercase conversion is applied.
 
-The SFTP-ready dataset contains:
+The SFTP-ready SAS dataset remains intentionally canonical:
 
 ```text
 ROW_ID | DIRECTORY_PATH | FILE_NAME | MD5 | SFTP_TARGET |
@@ -85,7 +87,7 @@ For a ZIP member, `TRANSFER_PATH` points to the extracted temporary file in SAS 
 );
 ```
 
-The SFTP macro is intentionally opinionated: it uses key authentication, requires a caller-owned `BATCH_ID`, requires `SFTP_TARGET` for each data file, and uses `REMOTE_DIR` only for the completed manifest workbook. Remote batch directories must already exist.
+The SFTP macro uses key authentication, requires a caller-owned `BATCH_ID`, requires `SFTP_TARGET` for each data file, and uses `REMOTE_DIR` only for the completed manifest workbook. Remote batch directories must already exist.
 
 A data row is uploaded as:
 
@@ -111,5 +113,5 @@ See `example/run_transfer.sas`.
 
 The workflow has two public stages:
 
-1. `%prepare_transfer_manifest()` processes the manifest row by row, infers whether ZIP extraction is needed, calculates MD5, creates `work.md5_result`, and writes the completed manifest workbook.
+1. `%prepare_transfer_manifest()` processes the manifest row by row, infers whether ZIP extraction is needed, calculates MD5, creates `work.md5_result`, and writes a result workbook with the same manifest column structure.
 2. `%sftp_upload_manifest()` uploads the resolved files and completed manifest using a caller-supplied batch ID.
