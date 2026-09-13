@@ -3,13 +3,15 @@
  *
  * Row-based manifest processing:
  *   Excel -> validate each row -> MD5 -> inferred ZIP extraction
- *         -> SFTP-ready dataset -> completed result workbook.
+ *         -> SFTP-ready dataset -> formatted result workbook.
  *
- * The result workbook preserves the original manifest columns and order.
- * Only the configured MD5 column is replaced with the calculated value.
+ * The result workbook is a byte-for-byte copy of the input workbook first.
+ * SAS then updates only the configured MD5 cells through LIBNAME EXCEL, so
+ * the workbook layout, formatting and other worksheets are preserved.
+ *
  * Any EXTRACT column present in Excel is preserved but ignored.
- *
  * HASHING_FILE() requires SAS 9.4M6+.
+ * LIBNAME EXCEL requires SAS/ACCESS to PC Files on Windows.
  */
 
 %macro _pm_resolve_columns(data=, directory_col=, file_col=, md5_col=, sftp_target_col=);
@@ -33,7 +35,7 @@
     sftp_target_col=7
 );
     %local _dircol _filecol _md5col _sftpcol _errors _outlib _outmem
-           _export_select;
+           _copy_error _xldirref _xlfileref _xlmd5ref _xlmd5type;
 
     /* Never leave a previous successful SAS result after a failed run. */
     %let _outlib=%scan(&out,1,.);
@@ -67,7 +69,6 @@
         %goto cleanup;
     %end;
 
-    /* Add an internal row id without changing the imported manifest. */
     data work._pm_input;
         set work._pm_raw;
         row_id=_n_;
@@ -228,40 +229,118 @@
     run;
 
     /*
-     * Rebuild the Excel sheet in its original column order. Every original
-     * column is copied unchanged except the configured MD5 column, which is
-     * replaced by the calculated 32-character hash. This also works when the
-     * original MD5 column was imported as numeric because it was blank.
+     * Preserve the workbook exactly: copy the original first, then change only
+     * the MD5 cells in the copy. The workbook must be closed in Excel.
      */
+    %let _copy_error=0;
+    filename _pmsrc "&xlsx" recfm=n;
+    filename _pmdst "&result_xlsx" recfm=n;
+
     data _null_;
-        set work._pm_cols end=eof;
-        length part $512 select_list $32767 name_literal $256;
-        retain select_list '';
-        name_literal=nliteral(name);
-        if varnum=&md5_col then
-            part=cats('b.md5 as ',name_literal,' length=32');
-        else
-            part=cats('a.',name_literal);
-        select_list=catx(', ',select_list,part);
-        if eof then call symputx('_export_select',select_list,'L');
+        length msg $500;
+        if fexist('_pmdst') then rc=fdelete('_pmdst');
+        rc=fcopy('_pmsrc','_pmdst');
+        if rc ne 0 then do;
+            msg=sysmsg();
+            putlog 'ERROR: Cannot copy result workbook. ' msg=;
+            call symputx('_copy_error',1,'L');
+        end;
     run;
 
-    proc sql;
-        create table work._pm_export as
-        select &_export_select
-          from work._pm_input as a
-          left join work._pm_results(keep=row_id md5) as b
-            on a.row_id=b.row_id
-         order by a.row_id;
-    quit;
+    filename _pmsrc clear;
+    filename _pmdst clear;
 
-    proc export
-        data=work._pm_export
-        outfile="&result_xlsx"
-        dbms=xlsx
-        replace;
-        sheet="&sheet";
+    %if &_copy_error %then %goto cleanup;
+
+    /* SCANTEXT=NO enables updates; FILELOCK=YES prevents concurrent Excel use. */
+    libname _pmxl excel path="&result_xlsx" scantext=no filelock=yes;
+
+    %if %sysfunc(libref(_pmxl)) ne 0 %then %do;
+        %put ERROR: Cannot open the copied workbook with the EXCEL LIBNAME engine.;
+        %put ERROR: Ensure SAS/ACCESS to PC Files is available and the workbook is closed.;
+        %goto delete_result;
+    %end;
+
+    /* Resolve column names again through the EXCEL engine by position. */
+    proc contents data=_pmxl."&sheet.$"n
+        out=work._pm_xlcols(keep=name varnum type) noprint;
     run;
+
+    %let _xldirref=;
+    %let _xlfileref=;
+    %let _xlmd5ref=;
+    %let _xlmd5type=;
+
+    data _null_;
+        set work._pm_xlcols;
+        if varnum=&directory_col then call symputx('_xldirref',nliteral(name),'L');
+        if varnum=&file_col then call symputx('_xlfileref',nliteral(name),'L');
+        if varnum=&md5_col then do;
+            call symputx('_xlmd5ref',nliteral(name),'L');
+            call symputx('_xlmd5type',type,'L');
+        end;
+    run;
+
+    %if not %length(%superq(_xldirref)) or
+        not %length(%superq(_xlfileref)) or
+        not %length(%superq(_xlmd5ref)) %then %do;
+        %put ERROR: Cannot resolve Excel columns in the copied workbook.;
+        libname _pmxl clear;
+        %goto delete_result;
+    %end;
+
+    /* MD5 is hexadecimal text; the template MD5 column must therefore be text. */
+    %if %superq(_xlmd5type) ne 2 %then %do;
+        %put ERROR: The Excel MD5 column is not recognized as character/text.;
+        %put ERROR: Format the MD5 column as Text in the manifest template and retry.;
+        libname _pmxl clear;
+        %goto delete_result;
+    %end;
+
+    /*
+     * Update only the MD5 cells. DIRECTORY_PATH + FILE_NAME identify the source
+     * represented by a row. Duplicate rows are safe because the same source has
+     * the same calculated MD5.
+     */
+    filename _pmsql temp;
+    data _null_;
+        set work._pm_results end=eof;
+        file _pmsql lrecl=32767;
+        length qdir qfile qmd5 $4096 sql_line $32767;
+
+        qdir=tranwrd(strip(directory_path),"'","''");
+        qfile=tranwrd(strip(file_name),"'","''");
+        qmd5=tranwrd(strip(md5),"'","''");
+
+        if _n_=1 then put 'proc sql;';
+
+        sql_line=cats(
+            'update _pmxl."', "&sheet", '$"n set ', "&_xlmd5ref", "='", qmd5,
+            "' where ", "&_xldirref", "='", qdir,
+            "' and ", "&_xlfileref", "='", qfile, "';"
+        );
+        put sql_line;
+
+        if eof then put 'quit;';
+    run;
+
+    %include _pmsql;
+    filename _pmsql clear;
+    libname _pmxl clear;
+
+    %if &sqlrc ne 0 %then %do;
+        %put ERROR: One or more MD5 updates to the copied workbook failed.;
+        %goto delete_result;
+    %end;
+
+    %goto cleanup;
+
+%delete_result:
+    filename _pmdel "&result_xlsx" recfm=n;
+    data _null_;
+        if fexist('_pmdel') then rc=fdelete('_pmdel');
+    run;
+    filename _pmdel clear;
 
 %cleanup:
     proc datasets library=work nolist;
