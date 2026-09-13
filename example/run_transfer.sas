@@ -3,8 +3,8 @@
 %include "../sas/prepare_transfer_manifest.sas";
 %include "../sas/sftp_upload_manifest.sas";
 
-%let manifest=C:\Transfer\manifest.xlsx;
-%let result_manifest=C:\Transfer\manifest_md5.xlsx;
+%let manifest=C:\Transfer\excel.xlsx;
+%let result_manifest=%sysfunc(prxchange(s/\.xlsx$/_md5_%sysfunc(today(),yymmddn8.).xlsx/i,1,&manifest));
 %let batch_id=20260913_001530;
 
 /*
