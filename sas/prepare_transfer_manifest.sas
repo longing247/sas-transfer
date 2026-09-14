@@ -45,7 +45,8 @@
         set work._tmp_results(where=(row_id=&row_id));
 
         length member $2048 member_file $1024
-               first_member $2048 member_md5 $32 first_md5 $32;
+               first_member $2048 member_md5 $32 first_md5 $32
+               mem_ref $8;
 
         status='OK';
         message='';
@@ -69,8 +70,9 @@
 
                 if upcase(member_file)=upcase(transfer_name) then do;
                     match_count+1;
+                    mem_ref='zipmem';
 
-                    rc2=filename('zipmem','inzip','ZIP',
+                    rc2=filename(mem_ref,'inzip','ZIP',
                                  cats('member=',quote(strip(member))));
                     putlog 'ZIP_MEMBER_FILENAME_RC=' rc2;
 
@@ -79,7 +81,7 @@
                         message=cats('Cannot access ZIP member: ',sysmsg());
                     end;
                     else do;
-                        member_md5=hashing_file('MD5','zipmem',4);
+                        member_md5=hashing_file('MD5',mem_ref,4);
                         putlog 'ZIP_MEMBER_MD5=' member_md5;
 
                         if missing(member_md5) then do;
@@ -96,7 +98,7 @@
                         end;
                     end;
 
-                    rc2=filename('zipmem');
+                    rc2=filename(mem_ref);
                 end;
             end;
         end;
