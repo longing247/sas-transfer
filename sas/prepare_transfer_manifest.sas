@@ -3,7 +3,7 @@
  *
  * Row-based manifest processing:
  *   Excel -> validate each row -> MD5 -> inferred ZIP extraction
- *         -> SFTP-ready dataset -> formatted result workbook.
+ *         -> transfer dataset -> formatted result workbook.
  *
  * The result workbook is a copy of the input workbook. SAS then updates only
  * the configured MD5 cells through LIBNAME EXCEL so formatting is preserved.
@@ -15,13 +15,12 @@
     quit;
 %mend _pm_cleanup;
 
-%macro _pm_resolve_columns(data=, directory_col=, file_col=, md5_col=, sftp_target_col=);
+%macro _pm_resolve_columns(data=, directory_col=, file_col=, md5_col=);
     proc contents data=&data out=work._pm_cols(keep=name varnum) noprint; run;
     proc sql noprint;
         select name into :_dircol trimmed from work._pm_cols where varnum=&directory_col;
         select name into :_filecol trimmed from work._pm_cols where varnum=&file_col;
         select name into :_md5col trimmed from work._pm_cols where varnum=&md5_col;
-        select name into :_sftpcol trimmed from work._pm_cols where varnum=&sftp_target_col;
     quit;
 %mend _pm_resolve_columns;
 
@@ -32,10 +31,9 @@
     out=work.md5_result,
     directory_col=1,
     file_col=4,
-    md5_col=6,
-    sftp_target_col=7
+    md5_col=6
 );
-    %local _dircol _filecol _md5col _sftpcol _errors _copy_error
+    %local _dircol _filecol _md5col _errors _copy_error
            _xlmd5ref _xlmd5type;
 
     /* If no result name is supplied, add _md5_yyyymmdd before .xlsx. */
@@ -56,14 +54,12 @@
         data=work._pm_raw,
         directory_col=&directory_col,
         file_col=&file_col,
-        md5_col=&md5_col,
-        sftp_target_col=&sftp_target_col
+        md5_col=&md5_col
     );
 
     %if not %length(%superq(_dircol)) or
         not %length(%superq(_filecol)) or
-        not %length(%superq(_md5col)) or
-        not %length(%superq(_sftpcol)) %then %do;
+        not %length(%superq(_md5col)) %then %do;
         %put ERROR: One or more requested Excel column indexes do not exist.;
         %goto cleanup;
     %end;
@@ -76,7 +72,7 @@
     data work._pm_results;
         set work._pm_input;
 
-        length directory_path $1024 file_name $1024 sftp_target $2048
+        length directory_path $1024 file_name $1024
                source_type $3 md5 $32 transfer_path $2048 transfer_name $1024
                status $8 message $500 member $2048 member_file $1024
                first_member $2048 member_md5 $32 first_md5 $32
@@ -84,7 +80,6 @@
 
         directory_path=strip(vvaluex("&_dircol"));
         file_name=strip(vvaluex("&_filecol"));
-        sftp_target=strip(vvaluex("&_sftpcol"));
 
         if missing(directory_path) and missing(file_name) then delete;
 
@@ -100,9 +95,6 @@
         end;
         else if missing(file_name) then do;
             status='ERROR'; message='FILE_NAME is required.';
-        end;
-        else if missing(sftp_target) then do;
-            status='ERROR'; message='SFTP_TARGET is required.';
         end;
 
         if status='OK' and (source_type='DIR' or whole_zip) then do;
@@ -197,7 +189,7 @@
             end;
         end;
 
-        keep row_id directory_path file_name md5 sftp_target source_type
+        keep row_id directory_path file_name md5 source_type
              transfer_path transfer_name status message;
     run;
 
