@@ -24,7 +24,7 @@
     quit;
 %mend _tmp_resolve_columns;
 
-%macro prepare_transfer_manifest(
+%macro prepare_transfer(
     xlsx=,
     sheet=Sheet1,
     result_xlsx=,
@@ -291,4 +291,4 @@
 
 %cleanup:
     %_tmp_cleanup;
-%mend prepare_transfer_manifest;
+%mend prepare_transfer;
