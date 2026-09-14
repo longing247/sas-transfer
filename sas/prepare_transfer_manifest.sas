@@ -9,20 +9,20 @@
  * the configured MD5 cells through LIBNAME EXCEL so formatting is preserved.
  */
 
-%macro _pm_cleanup;
+%macro _tmp_cleanup;
     proc datasets library=work nolist;
-        delete _pm_:;
+        delete _tmp_:;
     quit;
-%mend _pm_cleanup;
+%mend _tmp_cleanup;
 
-%macro _pm_resolve_columns(data=, directory_col=, file_col=, md5_col=);
-    proc contents data=&data out=work._pm_cols(keep=name varnum) noprint; run;
+%macro _tmp_resolve_columns(data=, directory_col=, file_col=, md5_col=);
+    proc contents data=&data out=work._tmp_cols(keep=name varnum) noprint; run;
     proc sql noprint;
-        select name into :_dircol trimmed from work._pm_cols where varnum=&directory_col;
-        select name into :_filecol trimmed from work._pm_cols where varnum=&file_col;
-        select name into :_md5col trimmed from work._pm_cols where varnum=&md5_col;
+        select name into :_dircol trimmed from work._tmp_cols where varnum=&directory_col;
+        select name into :_filecol trimmed from work._tmp_cols where varnum=&file_col;
+        select name into :_md5col trimmed from work._tmp_cols where varnum=&md5_col;
     quit;
-%mend _pm_resolve_columns;
+%mend _tmp_resolve_columns;
 
 %macro prepare_transfer_manifest(
     xlsx=,
@@ -45,13 +45,13 @@
         delete md5_result;
     quit;
 
-    proc import datafile="&xlsx" out=work._pm_raw dbms=xlsx replace;
+    proc import datafile="&xlsx" out=work._tmp_raw dbms=xlsx replace;
         sheet="&sheet";
         getnames=yes;
     run;
 
-    %_pm_resolve_columns(
-        data=work._pm_raw,
+    %_tmp_resolve_columns(
+        data=work._tmp_raw,
         directory_col=&directory_col,
         file_col=&file_col,
         md5_col=&md5_col
@@ -64,13 +64,13 @@
         %goto cleanup;
     %end;
 
-    data work._pm_input;
-        set work._pm_raw;
+    data work._tmp_input;
+        set work._tmp_raw;
         row_id=_n_;
     run;
 
-    data work._pm_results;
-        set work._pm_input;
+    data work._tmp_results;
+        set work._tmp_input;
 
         length directory_path $1024 file_name $1024
                source_type $3 md5 $32 transfer_path $2048 transfer_name $1024
@@ -194,7 +194,7 @@
     run;
 
     data _null_;
-        set work._pm_results end=eof;
+        set work._tmp_results end=eof;
         retain errors 0;
         if status='ERROR' then do;
             errors+1;
@@ -211,19 +211,19 @@
     %end;
 
     data &out;
-        set work._pm_results;
+        set work._tmp_results;
         drop status message;
     run;
 
     /* Copy the original workbook, then update only its MD5 cells. */
     %let _copy_error=0;
-    filename _pmsrc "&xlsx" recfm=n;
-    filename _pmdst "&result_xlsx" recfm=n;
+    filename _tmpsrc "&xlsx" recfm=n;
+    filename _tmpdst "&result_xlsx" recfm=n;
 
     data _null_;
         length msg $500;
-        if fexist('_pmdst') then rc=fdelete('_pmdst');
-        rc=fcopy('_pmsrc','_pmdst');
+        if fexist('_tmpdst') then rc=fdelete('_tmpdst');
+        rc=fcopy('_tmpsrc','_tmpdst');
         if rc ne 0 then do;
             msg=sysmsg();
             putlog 'ERROR: Cannot copy result workbook. ' msg=;
@@ -231,24 +231,24 @@
         end;
     run;
 
-    filename _pmsrc clear;
-    filename _pmdst clear;
+    filename _tmpsrc clear;
+    filename _tmpdst clear;
 
     %if &_copy_error %then %goto cleanup;
 
-    libname _pmxl excel path="&result_xlsx" scantext=no filelock=yes;
+    libname _tmpxl excel path="&result_xlsx" scantext=no filelock=yes;
 
-    %if %sysfunc(libref(_pmxl)) ne 0 %then %do;
+    %if %sysfunc(libref(_tmpxl)) ne 0 %then %do;
         %put ERROR: Cannot open the copied workbook with the EXCEL LIBNAME engine.;
         %goto delete_result;
     %end;
 
-    proc contents data=_pmxl."&sheet.$"n
-        out=work._pm_xlcols(keep=name varnum type) noprint;
+    proc contents data=_tmpxl."&sheet.$"n
+        out=work._tmp_xlcols(keep=name varnum type) noprint;
     run;
 
     data _null_;
-        set work._pm_xlcols;
+        set work._tmp_xlcols;
         if varnum=&md5_col then do;
             call symputx('_xlmd5ref',nliteral(name),'L');
             call symputx('_xlmd5type',type,'L');
@@ -256,39 +256,39 @@
     run;
 
     %if not %length(%superq(_xlmd5ref)) %then %do;
-        libname _pmxl clear;
+        libname _tmpxl clear;
         %goto delete_result;
     %end;
 
     %if %superq(_xlmd5type) ne 2 %then %do;
         %put ERROR: Format the Excel MD5 column as Text and retry.;
-        libname _pmxl clear;
+        libname _tmpxl clear;
         %goto delete_result;
     %end;
 
     /* Update only the MD5 cell for each original manifest row. */
     data _null_;
-        set work._pm_results(keep=row_id md5 rename=(md5=_new_md5));
-        modify _pmxl."&sheet.$"n point=row_id;
+        set work._tmp_results(keep=row_id md5 rename=(md5=_new_md5));
+        modify _tmpxl."&sheet.$"n point=row_id;
         &_xlmd5ref=_new_md5;
         replace;
     run;
 
     %if &syserr>4 %then %do;
-        libname _pmxl clear;
+        libname _tmpxl clear;
         %goto delete_result;
     %end;
 
-    libname _pmxl clear;
+    libname _tmpxl clear;
     %goto cleanup;
 
 %delete_result:
-    filename _pmdel "&result_xlsx" recfm=n;
+    filename _tmpdel "&result_xlsx" recfm=n;
     data _null_;
-        if fexist('_pmdel') then rc=fdelete('_pmdel');
+        if fexist('_tmpdel') then rc=fdelete('_tmpdel');
     run;
-    filename _pmdel clear;
+    filename _tmpdel clear;
 
 %cleanup:
-    %_pm_cleanup;
+    %_tmp_cleanup;
 %mend prepare_transfer_manifest;
