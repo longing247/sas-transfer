@@ -9,11 +9,11 @@
  * the configured MD5 cells through LIBNAME EXCEL so formatting is preserved.
  */
 
-%macro _tmp_cleanup;
+%macro _cleanup;
     proc datasets library=work nolist;
         delete _tmp_:;
     quit;
-%mend _tmp_cleanup;
+%mend _cleanup;
 
 %macro _tmp_resolve_columns(data=, directory_col=, file_col=, md5_col=);
     proc contents data=&data out=work._tmp_cols(keep=name varnum) noprint; run;
@@ -290,5 +290,5 @@
     filename _tmpdel clear;
 
 %cleanup:
-    %_tmp_cleanup;
+    %_cleanup;
 %mend prepare_transfer;
