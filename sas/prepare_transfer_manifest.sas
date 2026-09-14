@@ -86,9 +86,17 @@
         status='OK';
         message='';
         transfer_name=scan(file_name,-1,'\/');
-        source_type=ifc(prxmatch('/\.zip$/i',directory_path),'ZIP','DIR');
+        source_type=ifc(prxmatch('/\.zip$/i',strip(directory_path)),'ZIP','DIR');
         whole_zip=(source_type='ZIP' and
                    upcase(transfer_name)=upcase(scan(directory_path,-1,'\/')));
+
+        /* Temporary test logging. */
+        putlog '--- SOURCE TEST ---';
+        putlog directory_path=;
+        putlog file_name=;
+        putlog transfer_name=;
+        putlog source_type=;
+        putlog whole_zip=;
 
         if missing(directory_path) then do;
             status='ERROR'; message='DIRECTORY_PATH is required.';
