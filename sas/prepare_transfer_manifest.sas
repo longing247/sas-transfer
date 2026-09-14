@@ -36,11 +36,9 @@
     %local _dircol _filecol _md5col _errors _copy_error
            _xlmd5ref _xlmd5type;
 
-    /* If no result name is supplied, add _md5_yyyymmdd before .xlsx. */
     %if not %length(%superq(result_xlsx)) %then
         %let result_xlsx=%sysfunc(prxchange(s/\.xlsx$/_md5_%sysfunc(today(),yymmddn8.).xlsx/i,1,%superq(xlsx)));
 
-    /* Remove the previous successful result. */
     proc datasets library=work nolist;
         delete md5_result;
     quit;
@@ -76,7 +74,7 @@
                source_type $3 md5 $32 transfer_path $2048 transfer_name $1024
                status $8 message $500 member $2048 member_file $1024
                first_member $2048 member_md5 $32 first_md5 $32
-               zipref memref outref fileref $8;
+               fileref $8;
 
         directory_path=strip(vvaluex("&_dircol"));
         file_name=strip(vvaluex("&_filecol"));
@@ -90,7 +88,6 @@
         whole_zip=(source_type='ZIP' and
                    upcase(transfer_name)=upcase(scan(directory_path,-1,'\/')));
 
-        /* Temporary test logging. */
         putlog '--- SOURCE TEST ---';
         putlog directory_path=;
         putlog file_name=;
@@ -130,31 +127,37 @@
             match_count=0;
             first_md5='';
             first_member='';
-            zipref='inzip';
-            rc=filename(zipref,directory_path,'ZIP');
+
+            /* Use literal filerefs for the ZIP access method. */
+            rc=filename('inzip',directory_path,'ZIP');
+            putlog 'ZIP_FILENAME_RC=' rc;
 
             if rc ne 0 then do;
                 status='ERROR'; message=cats('Cannot open ZIP: ',sysmsg());
             end;
             else do;
-                did=dopen(zipref);
+                did=dopen('inzip');
+                putlog 'ZIP_DID=' did;
+
                 if did=0 then do;
                     status='ERROR'; message=cats('Cannot read ZIP: ',sysmsg());
                 end;
                 else do i=1 to dnum(did) while(status='OK');
                     member=dread(did,i);
+                    putlog 'ZIP_MEMBER=' member;
+
                     if substr(member,lengthn(member),1) ne '/' then do;
                         member_file=scan(member,-1,'/');
                         if upcase(member_file)=upcase(transfer_name) then do;
                             match_count+1;
-                            memref='zipmem';
-                            rc2=filename(memref,directory_path,'ZIP',
+
+                            rc2=filename('zipmem',directory_path,'ZIP',
                                          cats('member=',quote(strip(member))));
                             if rc2 ne 0 then do;
                                 status='ERROR'; message='Cannot access ZIP member.';
                             end;
                             else do;
-                                member_md5=hashing_file('MD5',memref,4);
+                                member_md5=hashing_file('MD5','zipmem',4);
                                 if missing(member_md5) then do;
                                     status='ERROR'; message='ZIP member MD5 calculation failed.';
                                 end;
@@ -167,13 +170,13 @@
                                     message='Duplicate ZIP members have different MD5 values.';
                                 end;
                             end;
-                            rc2=filename(memref);
+                            rc2=filename('zipmem');
                         end;
                     end;
                 end;
                 rc2=dclose(did);
             end;
-            rc=filename(zipref);
+            rc=filename('inzip');
 
             if status='OK' and match_count=0 then do;
                 status='ERROR'; message='Requested file not found in ZIP.';
@@ -182,18 +185,18 @@
             if status='OK' then do;
                 md5=first_md5;
                 transfer_path=cats(pathname('work'),'\_extract_',row_id,'_',transfer_name);
-                memref='zinmem'; outref='xout';
-                rc1=filename(memref,directory_path,'ZIP',
+
+                rc1=filename('zinmem',directory_path,'ZIP',
                              cats('member=',quote(strip(first_member))));
-                rc2=filename(outref,transfer_path,'DISK','recfm=n');
+                rc2=filename('xout',transfer_path,'DISK','recfm=n');
                 if rc1 ne 0 or rc2 ne 0 then do;
                     status='ERROR'; message=cats('Cannot prepare extraction: ',sysmsg());
                 end;
-                else if fcopy(memref,outref) ne 0 then do;
+                else if fcopy('zinmem','xout') ne 0 then do;
                     status='ERROR'; message=cats('Extraction failed: ',sysmsg());
                 end;
-                rc1=filename(memref);
-                rc2=filename(outref);
+                rc1=filename('zinmem');
+                rc2=filename('xout');
             end;
         end;
 
@@ -223,7 +226,6 @@
         drop status message;
     run;
 
-    /* Copy the original workbook, then update only its MD5 cells. */
     %let _copy_error=0;
     filename _tmpsrc "&xlsx" recfm=n;
     filename _tmpdst "&result_xlsx" recfm=n;
@@ -274,7 +276,6 @@
         %goto delete_result;
     %end;
 
-    /* Update only the MD5 cell for each original manifest row. */
     data _null_;
         set work._tmp_results(keep=row_id md5 rename=(md5=_new_md5));
         modify _tmpxl."&sheet.$"n point=row_id;
