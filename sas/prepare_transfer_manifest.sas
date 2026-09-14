@@ -26,8 +26,8 @@
 
 /*
  * Process one requested member from a ZIP.
- * The outer ZIP is assigned with a FILENAME statement because that is the
- * form confirmed to work with DOPEN/DREAD in the target SAS environment.
+ * DOPEN/DREAD uses a statement-assigned ZIP fileref. Member filerefs use the
+ * physical ZIP path, matching the previously proven working implementation.
  */
 %macro _process_zip_member(row_id=);
     %local _zip_path;
@@ -46,7 +46,7 @@
 
         length member $2048 member_file $1024
                first_member $2048 member_md5 $32 first_md5 $32
-               mem_ref $8;
+               mem_ref $8 extract_ref $8;
 
         status='OK';
         message='';
@@ -70,10 +70,16 @@
 
                 if upcase(member_file)=upcase(transfer_name) then do;
                     match_count+1;
-                    mem_ref='zipmem';
 
-                    rc2=filename(mem_ref,'inzip','ZIP',
-                                 cats('member=',quote(strip(member))));
+                    /* Same pattern as the previously working reference code. */
+                    mem_ref=cats('zm',put(i,z5.));
+                    rc2=filename(
+                        mem_ref,
+                        "%superq(_zip_path)",
+                        'ZIP',
+                        cats('member=',quote(strip(member)))
+                    );
+                    putlog 'ZIP_MEMBER_FILEREF=' mem_ref;
                     putlog 'ZIP_MEMBER_FILENAME_RC=' rc2;
 
                     if rc2 ne 0 then do;
@@ -114,8 +120,13 @@
             md5=first_md5;
             transfer_path=cats(pathname('work'),'\_extract_',row_id,'_',transfer_name);
 
-            rc1=filename('zinmem','inzip','ZIP',
-                         cats('member=',quote(strip(first_member))));
+            extract_ref='zinmem';
+            rc1=filename(
+                extract_ref,
+                "%superq(_zip_path)",
+                'ZIP',
+                cats('member=',quote(strip(first_member)))
+            );
             rc2=filename('xout',transfer_path,'DISK','recfm=n');
             putlog 'ZIP_EXTRACT_MEMBER_RC=' rc1;
             putlog 'ZIP_EXTRACT_OUTPUT_RC=' rc2;
@@ -124,12 +135,12 @@
                 status='ERROR';
                 message=cats('Cannot prepare extraction: ',sysmsg());
             end;
-            else if fcopy('zinmem','xout') ne 0 then do;
+            else if fcopy(extract_ref,'xout') ne 0 then do;
                 status='ERROR';
                 message=cats('Extraction failed: ',sysmsg());
             end;
 
-            rc1=filename('zinmem');
+            rc1=filename(extract_ref);
             rc2=filename('xout');
         end;
 
