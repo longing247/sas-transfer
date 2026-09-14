@@ -15,14 +15,14 @@
     quit;
 %mend _cleanup;
 
-%macro _tmp_resolve_columns(data=, directory_col=, file_col=, md5_col=);
+%macro _resolve__excel_columns(data=, directory_col=, file_col=, md5_col=);
     proc contents data=&data out=work._tmp_cols(keep=name varnum) noprint; run;
     proc sql noprint;
         select name into :_dircol trimmed from work._tmp_cols where varnum=&directory_col;
         select name into :_filecol trimmed from work._tmp_cols where varnum=&file_col;
         select name into :_md5col trimmed from work._tmp_cols where varnum=&md5_col;
     quit;
-%mend _tmp_resolve_columns;
+%mend _resolve__excel_columns;
 
 %macro prepare_transfer(
     xlsx=,
@@ -50,7 +50,7 @@
         getnames=yes;
     run;
 
-    %_tmp_resolve_columns(
+    %_resolve__excel_columns(
         data=work._tmp_raw,
         directory_col=&directory_col,
         file_col=&file_col,
