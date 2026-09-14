@@ -128,7 +128,7 @@
             first_md5='';
             first_member='';
 
-            /* Use literal filerefs for the ZIP access method. */
+            /* Assign the physical ZIP once. Member filerefs refer to INZIP. */
             rc=filename('inzip',directory_path,'ZIP');
             putlog 'ZIP_FILENAME_RC=' rc;
 
@@ -151,15 +151,19 @@
                         if upcase(member_file)=upcase(transfer_name) then do;
                             match_count+1;
 
-                            rc2=filename('zipmem',directory_path,'ZIP',
+                            rc2=filename('zipmem','inzip','ZIP',
                                          cats('member=',quote(strip(member))));
+                            putlog 'ZIP_MEMBER_FILENAME_RC=' rc2;
+
                             if rc2 ne 0 then do;
-                                status='ERROR'; message='Cannot access ZIP member.';
+                                status='ERROR'; message=cats('Cannot access ZIP member: ',sysmsg());
                             end;
                             else do;
                                 member_md5=hashing_file('MD5','zipmem',4);
+                                putlog 'ZIP_MEMBER_MD5=' member_md5;
+
                                 if missing(member_md5) then do;
-                                    status='ERROR'; message='ZIP member MD5 calculation failed.';
+                                    status='ERROR'; message=cats('ZIP member MD5 calculation failed: ',sysmsg());
                                 end;
                                 else if match_count=1 then do;
                                     first_md5=member_md5;
@@ -176,7 +180,6 @@
                 end;
                 rc2=dclose(did);
             end;
-            rc=filename('inzip');
 
             if status='OK' and match_count=0 then do;
                 status='ERROR'; message='Requested file not found in ZIP.';
@@ -186,9 +189,12 @@
                 md5=first_md5;
                 transfer_path=cats(pathname('work'),'\_extract_',row_id,'_',transfer_name);
 
-                rc1=filename('zinmem',directory_path,'ZIP',
+                rc1=filename('zinmem','inzip','ZIP',
                              cats('member=',quote(strip(first_member))));
                 rc2=filename('xout',transfer_path,'DISK','recfm=n');
+                putlog 'ZIP_EXTRACT_MEMBER_RC=' rc1;
+                putlog 'ZIP_EXTRACT_OUTPUT_RC=' rc2;
+
                 if rc1 ne 0 or rc2 ne 0 then do;
                     status='ERROR'; message=cats('Cannot prepare extraction: ',sysmsg());
                 end;
@@ -198,6 +204,8 @@
                 rc1=filename('zinmem');
                 rc2=filename('xout');
             end;
+
+            rc=filename('inzip');
         end;
 
         keep row_id directory_path file_name md5 source_type
