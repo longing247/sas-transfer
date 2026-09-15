@@ -65,14 +65,8 @@
                     match_count+1;
 
                     mem_ref=cats('zm',put(i,z5.));
-                    rc2=filename(
-                        mem_ref,
-                        "%superq(_zip_path)",
-                        'ZIP',
-                        cats('member=',quote(strip(member)))
-                    );
-                    putlog 'ZIP_MEMBER_FILEREF=' mem_ref;
-                    putlog 'ZIP_MEMBER_FILENAME_RC=' rc2;
+                    rc2=filename(mem_ref,"%superq(_zip_path)",'ZIP',
+                                 cats('member=',quote(strip(member))));
 
                     if rc2 ne 0 then do;
                         status='ERROR';
@@ -80,7 +74,6 @@
                     end;
                     else do;
                         member_md5=hashing_file('MD5',mem_ref,4);
-                        putlog 'ZIP_MEMBER_MD5=' member_md5;
 
                         if missing(member_md5) then do;
                             status='ERROR';
@@ -117,10 +110,8 @@
                 extract_ref,
                 "%superq(_zip_path)",
                 'ZIP',
-                cats(
-                    'member=',quote(strip(first_member)),
-                    ' recfm=n lrecl=1048576'
-                )
+                cats('member=',quote(strip(first_member)),
+                     ' recfm=n lrecl=1048576')
             );
             rc2=filename('xout',transfer_path,'DISK','recfm=n lrecl=1048576');
 
@@ -299,6 +290,11 @@
         drop status message;
     run;
 
+    /*
+     * Recreate the imported MD5 column as character $32 before export.
+     * This handles an empty Excel MD5 column whether PROC IMPORT inferred it
+     * as character length 1 or as numeric.
+     */
     data work._tmp_output;
         if _n_=1 then do;
             declare hash h(dataset:'work._tmp_results(keep=row_id md5)');
@@ -307,13 +303,16 @@
             h.defineDone();
         end;
 
-        set work._tmp_input;
-        length md5 $32;
-        rc=h.find();
+        set work._tmp_input(rename=(&_md5col=_tmp_old_md5));
+        length &_md5col $32 md5 $32;
 
+        /* Preserve any existing value; calculated MD5 replaces it below. */
+        &_md5col=strip(vvalue(_tmp_old_md5));
+
+        rc=h.find();
         if rc=0 then &_md5col=md5;
 
-        drop row_id md5 rc;
+        drop row_id md5 rc _tmp_old_md5;
     run;
 
     proc export data=work._tmp_output
