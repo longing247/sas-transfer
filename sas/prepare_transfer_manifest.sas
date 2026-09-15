@@ -119,7 +119,7 @@
                 'ZIP',
                 cats('member=',quote(strip(first_member)))
             );
-            rc2=filename('xout',transfer_path,'DISK','recfm=n');
+            rc2=filename('xout',transfer_path,'DISK','recfm=n lrecl=1048576');
 
             if rc1 ne 0 or rc2 ne 0 then do;
                 status='ERROR';
