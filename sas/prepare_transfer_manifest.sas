@@ -71,7 +71,6 @@
                 if upcase(member_file)=upcase(transfer_name) then do;
                     match_count+1;
 
-                    /* Same pattern as the previously working reference code. */
                     mem_ref=cats('zm',put(i,z5.));
                     rc2=filename(
                         mem_ref,
@@ -151,6 +150,15 @@
     filename inzip clear;
 %mend _process_zip_member;
 
+/* Update one MD5 cell in the copied workbook. */
+%macro _update_excel_md5(row_id=, md5=);
+    proc sql;
+        update _tmpxl."&sheet.$"n
+           set &_xlmd5ref="&md5"
+         where monotonic()=&row_id;
+    quit;
+%mend _update_excel_md5;
+
 %macro prepare_transfer(
     xlsx=,
     sheet=Sheet1,
@@ -161,7 +169,8 @@
     md5_col=6
 );
     %local _dircol _filecol _md5col _errors _copy_error
-           _xlmd5ref _xlmd5type _zip_rows _zip_n _z _zip_row;
+           _xlmd5ref _xlmd5type _zip_rows _zip_n _z _zip_row
+           _excel_rows _excel_n _e _excel_row _excel_md5;
 
     %if not %length(%superq(result_xlsx)) %then
         %let result_xlsx=%sysfunc(prxchange(s/\.xlsx$/_md5_%sysfunc(today(),yymmddn8.).xlsx/i,1,%superq(xlsx)));
@@ -194,11 +203,6 @@
         row_id=_n_;
     run;
 
-    /*
-     * Process ordinary files and whole-ZIP rows here.
-     * ZIP-member rows are marked ZIP and handled afterwards by the helper
-     * macro so the ZIP itself can be assigned with a FILENAME statement.
-     */
     data work._tmp_results;
         set work._tmp_input;
 
@@ -261,7 +265,6 @@
              transfer_path transfer_name status message;
     run;
 
-    /* Process ZIP-member rows one at a time with a statement-assigned ZIP. */
     proc sql noprint;
         select row_id
           into :_zip_rows separated by ' '
@@ -365,16 +368,29 @@
         %goto delete_result;
     %end;
 
-    data _null_;
-        set work._tmp_results(keep=row_id md5 rename=(md5=_new_md5));
-        modify _tmpxl."&sheet.$"n point=row_id;
-        &_xlmd5ref=_new_md5;
-        replace;
-    run;
+    /*
+     * The EXCEL engine in the target environment does not support DATA-step
+     * MODIFY/POINT access. Update the copied sheet one manifest row at a time
+     * through SQL instead.
+     */
+    proc sql noprint;
+        select row_id, md5
+          into :_excel_row1-:_excel_row9999,
+               :_excel_md51-:_excel_md59999
+          from work._tmp_results
+         order by row_id;
+        %let _excel_n=&sqlobs;
+    quit;
 
-    %if &syserr>4 %then %do;
-        libname _tmpxl clear;
-        %goto delete_result;
+    %do _e=1 %to &_excel_n;
+        %let _excel_row=&&_excel_row&_e;
+        %let _excel_md5=&&_excel_md5&_e;
+        %_update_excel_md5(row_id=&_excel_row,md5=&_excel_md5);
+
+        %if &sqlrc ne 0 %then %do;
+            libname _tmpxl clear;
+            %goto delete_result;
+        %end;
     %end;
 
     libname _tmpxl clear;
