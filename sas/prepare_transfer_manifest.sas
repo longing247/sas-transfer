@@ -2,23 +2,6 @@
  * Excel manifest -> validate files -> calculate MD5 -> result Excel.
  */
 
-%macro _cleanup;
-    proc datasets library=work nolist;
-        delete _tmp_:;
-    quit;
-%mend;
-
-%macro _resolve__excel_columns(data=, directory_col=, file_col=, md5_col=);
-    proc contents data=&data out=work._tmp_cols(keep=name varnum) noprint; run;
-
-    data _null_;
-        set work._tmp_cols;
-        if varnum=&directory_col then call symputx('_dircol',name,'L');
-        if varnum=&file_col      then call symputx('_filecol',name,'L');
-        if varnum=&md5_col       then call symputx('_md5col',name,'L');
-    run;
-%mend;
-
 %macro _process_zip_member(row_id=);
     %local _zip_path;
 
@@ -127,24 +110,27 @@
     md5_col=6
 );
     %local _dircol _filecol _md5col _errors
-           _zip_rows _zip_n _z _zip_row;
+           _zip_n _z _zip_row dsid rc;
+
+    %let _zip_n=0;
+    %let _errors=0;
 
     %if not %length(%superq(result_xlsx)) %then
         %let result_xlsx=%sysfunc(prxchange(s/\.xlsx$/_md5_%sysfunc(today(),yymmddn8.).xlsx/i,1,%superq(xlsx)));
-
-    options validvarname=any;
 
     proc import datafile="&xlsx" out=work._tmp_raw dbms=xlsx replace;
         sheet="&sheet";
         getnames=yes;
     run;
 
-    %_resolve__excel_columns(
-        data=work._tmp_raw,
-        directory_col=&directory_col,
-        file_col=&file_col,
-        md5_col=&md5_col
-    );
+    /* Resolve the requested Excel columns by position. */
+    %let dsid=%sysfunc(open(work._tmp_raw));
+    %if &dsid %then %do;
+        %let _dircol=%sysfunc(varname(&dsid,&directory_col));
+        %let _filecol=%sysfunc(varname(&dsid,&file_col));
+        %let _md5col=%sysfunc(varname(&dsid,&md5_col));
+        %let rc=%sysfunc(close(&dsid));
+    %end;
 
     %if not %length(%superq(_dircol)) or
         not %length(%superq(_filecol)) or
@@ -207,22 +193,16 @@
              transfer_path transfer_name status message;
     run;
 
+    /* Save ZIP row numbers for processing outside the DATA step. */
     data _null_;
         set work._tmp_results(where=(status='ZIP')) end=last;
-        length rows $32767;
-        retain rows '' count 0;
         count+1;
-        rows=catx(' ',rows,row_id);
-        if last then do;
-            call symputx('_zip_rows',rows,'L');
-            call symputx('_zip_n',count,'L');
-        end;
+        call symputx(cats('_zip_row',count),row_id,'L');
+        if last then call symputx('_zip_n',count,'L');
     run;
 
-    %if not %symexist(_zip_n) %then %let _zip_n=0;
-
     %do _z=1 %to &_zip_n;
-        %let _zip_row=%scan(%superq(_zip_rows),&_z,%str( ));
+        %let _zip_row=&&_zip_row&_z;
         %_process_zip_member(row_id=&_zip_row);
     %end;
 
@@ -235,7 +215,6 @@
 
     data _null_;
         set work._tmp_results end=last;
-        retain errors 0;
         if status='ERROR' then errors+1;
         if last then call symputx('_errors',errors,'L');
     run;
@@ -275,5 +254,7 @@
     run;
 
 %cleanup:
-    %_cleanup;
+    proc datasets library=work nolist;
+        delete _tmp_:;
+    quit;
 %mend;
