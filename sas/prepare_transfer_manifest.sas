@@ -7,7 +7,7 @@
 
     data _null_;
         set work._tmp_results(where=(row_id=&row_id));
-        call symputx('_zip_path',directory_path,'L');
+        call symputx('_zip_path',directory_path);
     run;
 
     filename inzip ZIP "%superq(_zip_path)";
@@ -31,7 +31,7 @@
             if substr(member,lengthn(member),1) ne '/' then do;
                 member_file=scan(member,-1,'/');
 
-                if upcase(member_file)=upcase(transfer_name) then do;
+                if upcase(strip(member_file))=upcase(strip(transfer_name)) then do;
                     match_count+1;
                     mem_ref=cats('zm',put(i,z5.));
                     rc=filename(mem_ref,"%superq(_zip_path)",'ZIP',
@@ -144,7 +144,7 @@
         row_id=_n_;
     run;
 
-    /* Validate normal files and calculate MD5. */
+    /* Column 1 is either a folder path or a ZIP path. */
     data work._tmp_results;
         set work._tmp_input;
         length directory_path $1024 file_name $1024 source_type $3 md5 $32
@@ -157,9 +157,13 @@
 
         status='OK';
         transfer_name=scan(file_name,-1,'\/');
-        source_type=ifc(prxmatch('/\.zip$/i',directory_path),'ZIP','DIR');
+
+        if lowcase(scan(strip(directory_path),-1,'.'))='zip' then source_type='ZIP';
+        else source_type='DIR';
+
         whole_zip=(source_type='ZIP' and
-                   upcase(transfer_name)=upcase(scan(directory_path,-1,'\/')));
+                   upcase(strip(transfer_name))=
+                   upcase(strip(scan(directory_path,-1,'\/'))));
 
         if missing(directory_path) then do;
             status='ERROR'; message='DIRECTORY_PATH is required.';
@@ -199,7 +203,7 @@
         set work._tmp_results(where=(status='ZIP')) end=last;
         count+1;
         call symputx(cats('_zip_row',count),row_id,'L');
-        if last then call symputx('_zip_n',count,'L');
+        if last then call symputx('_zip_n',count);
     run;
 
     %do _z=1 %to &_zip_n;
@@ -217,12 +221,17 @@
     data _null_;
         set work._tmp_results end=last;
         if status='ERROR' then errors+1;
-        if last then call symputx('_errors',errors,'L');
+        if last then call symputx('_errors',errors);
     run;
 
     %if &_errors>0 %then %do;
+        data _null_;
+            set work._tmp_results;
+            if status='ERROR' then
+                putlog 'ERROR: ' file_name= message=;
+        run;
         %put ERROR: Transfer manifest preparation failed with &_errors error(s).;
-        %goto cleanup;
+        %return;
     %end;
 
     data &out;
