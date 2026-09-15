@@ -63,7 +63,6 @@
 
                 if upcase(member_file)=upcase(transfer_name) then do;
                     match_count+1;
-
                     mem_ref=cats('zm',put(i,z5.));
                     rc2=filename(mem_ref,"%superq(_zip_path)",'ZIP',
                                  cats('member=',quote(strip(member))));
@@ -88,7 +87,6 @@
                             message='Duplicate ZIP members have different MD5 values.';
                         end;
                     end;
-
                     rc2=filename(mem_ref);
                 end;
             end;
@@ -145,7 +143,7 @@
     md5_col=6
 );
     %local _dircol _filecol _md5col _errors
-           _zip_rows _zip_n _z _zip_row;
+           _zip_rows _zip_n _z _zip_row _select_list;
 
     %if not %length(%superq(result_xlsx)) %then
         %let result_xlsx=%sysfunc(prxchange(s/\.xlsx$/_md5_%sysfunc(today(),yymmddn8.).xlsx/i,1,%superq(xlsx)));
@@ -153,6 +151,9 @@
     proc datasets library=work nolist;
         delete md5_result;
     quit;
+
+    /* Keep original Excel header text whenever it is a valid SAS name literal. */
+    options validvarname=any;
 
     proc import datafile="&xlsx" out=work._tmp_raw dbms=xlsx replace;
         sheet="&sheet";
@@ -226,13 +227,11 @@
             end;
             else do;
                 md5=hashing_file('MD5',fileref,4);
-
                 if missing(md5) then do;
                     status='ERROR';
                     message=cats('MD5 calculation failed: ',sysmsg());
                 end;
             end;
-
             rc=filename(fileref);
         end;
 
@@ -291,29 +290,30 @@
     run;
 
     /*
-     * Recreate the imported MD5 column as character $32 before export.
-     * This handles an empty Excel MD5 column whether PROC IMPORT inferred it
-     * as character length 1 or as numeric.
+     * Build the export dataset in the original column order.  At the MD5
+     * position use the calculated $32 value instead of recreating the MD5
+     * variable at the end of the DATA step.
      */
-    data work._tmp_output;
-        if _n_=1 then do;
-            declare hash h(dataset:'work._tmp_results(keep=row_id md5)');
-            h.defineKey('row_id');
-            h.defineData('md5');
-            h.defineDone();
-        end;
+    proc sql noprint;
+        select case
+                 when varnum=&md5_col then
+                     cats('b.md5 as ',nliteral(name))
+                 else
+                     cats('a.',nliteral(name))
+               end
+          into :_select_list separated by ', '
+          from work._tmp_cols
+         order by varnum;
+    quit;
 
-        set work._tmp_input(rename=(&_md5col=_tmp_old_md5));
-        length &_md5col $32 md5 $32;
-
-        /* Preserve any existing value; calculated MD5 replaces it below. */
-        &_md5col=strip(vvalue(_tmp_old_md5));
-
-        rc=h.find();
-        if rc=0 then &_md5col=md5;
-
-        drop row_id md5 rc _tmp_old_md5;
-    run;
+    proc sql;
+        create table work._tmp_output as
+        select &_select_list
+          from work._tmp_input as a
+          left join work._tmp_results as b
+            on a.row_id=b.row_id
+         order by a.row_id;
+    quit;
 
     proc export data=work._tmp_output
         outfile="&result_xlsx"
