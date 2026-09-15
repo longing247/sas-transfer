@@ -14,7 +14,7 @@
 %mend _cleanup;
 
 %macro _resolve__excel_columns(data=, directory_col=, file_col=, md5_col=);
-    proc contents data=&data out=work._tmp_cols(keep=name varnum) noprint; run;
+    proc contents data=&data out=work._tmp_cols(keep=name varnum label) noprint; run;
     proc sql noprint;
         select name into :_dircol trimmed from work._tmp_cols where varnum=&directory_col;
         select name into :_filecol trimmed from work._tmp_cols where varnum=&file_col;
@@ -152,7 +152,6 @@
         delete md5_result;
     quit;
 
-    /* Keep original Excel header text whenever it is a valid SAS name literal. */
     options validvarname=any;
 
     proc import datafile="&xlsx" out=work._tmp_raw dbms=xlsx replace;
@@ -290,16 +289,19 @@
     run;
 
     /*
-     * Build the export dataset in the original column order.  At the MD5
-     * position use the calculated $32 value instead of recreating the MD5
-     * variable at the end of the DATA step.
+     * Keep the original column order. PROC IMPORT stores long Excel headings
+     * as variable labels even when the SAS variable name must be shortened.
+     * Carry those labels to the export dataset and let PROC EXPORT use them
+     * as the Excel column headings.
      */
     proc sql noprint;
         select case
                  when varnum=&md5_col then
-                     cats('b.md5 as ',nliteral(name))
+                     cats('b.md5 as ',nliteral(name),
+                          ' label=',"'",tranwrd(coalescec(label,name),"'","''"),"'")
                  else
-                     cats('a.',nliteral(name))
+                     cats('a.',nliteral(name),' as ',nliteral(name),
+                          ' label=',"'",tranwrd(coalescec(label,name),"'","''"),"'")
                end
           into :_select_list separated by ', '
           from work._tmp_cols
@@ -317,6 +319,7 @@
 
     proc export data=work._tmp_output
         outfile="&result_xlsx"
+        label
         dbms=xlsx
         replace;
         sheet="&sheet";
