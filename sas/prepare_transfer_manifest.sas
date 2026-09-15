@@ -9,22 +9,23 @@
 %mend;
 
 %macro _resolve__excel_columns(data=, directory_col=, file_col=, md5_col=);
-    proc contents data=&data out=work._tmp_cols(keep=name varnum label) noprint; run;
-    proc sql noprint;
-        select name into :_dircol trimmed from work._tmp_cols where varnum=&directory_col;
-        select name into :_filecol trimmed from work._tmp_cols where varnum=&file_col;
-        select name into :_md5col trimmed from work._tmp_cols where varnum=&md5_col;
-    quit;
+    proc contents data=&data out=work._tmp_cols(keep=name varnum) noprint; run;
+
+    data _null_;
+        set work._tmp_cols;
+        if varnum=&directory_col then call symputx('_dircol',name,'L');
+        if varnum=&file_col      then call symputx('_filecol',name,'L');
+        if varnum=&md5_col       then call symputx('_md5col',name,'L');
+    run;
 %mend;
 
 %macro _process_zip_member(row_id=);
     %local _zip_path;
 
-    proc sql noprint;
-        select directory_path into :_zip_path trimmed
-        from work._tmp_results
-        where row_id=&row_id;
-    quit;
+    data _null_;
+        set work._tmp_results(where=(row_id=&row_id));
+        call symputx('_zip_path',directory_path,'L');
+    run;
 
     filename inzip ZIP "%superq(_zip_path)";
 
@@ -126,7 +127,7 @@
     md5_col=6
 );
     %local _dircol _filecol _md5col _errors
-           _zip_rows _zip_n _z _zip_row _select_list;
+           _zip_rows _zip_n _z _zip_row;
 
     %if not %length(%superq(result_xlsx)) %then
         %let result_xlsx=%sysfunc(prxchange(s/\.xlsx$/_md5_%sysfunc(today(),yymmddn8.).xlsx/i,1,%superq(xlsx)));
@@ -206,13 +207,20 @@
              transfer_path transfer_name status message;
     run;
 
-    proc sql noprint;
-        select row_id into :_zip_rows separated by ' '
-        from work._tmp_results
-        where status='ZIP';
-    quit;
+    data _null_;
+        set work._tmp_results(where=(status='ZIP')) end=last;
+        length rows $32767;
+        retain rows '' count 0;
+        count+1;
+        rows=catx(' ',rows,row_id);
+        if last then do;
+            call symputx('_zip_rows',rows,'L');
+            call symputx('_zip_n',count,'L');
+        end;
+    run;
 
-    %let _zip_n=%sysfunc(countw(%superq(_zip_rows),%str( )));
+    %if not %symexist(_zip_n) %then %let _zip_n=0;
+
     %do _z=1 %to &_zip_n;
         %let _zip_row=%scan(%superq(_zip_rows),&_z,%str( ));
         %_process_zip_member(row_id=&_zip_row);
@@ -225,11 +233,12 @@
         proc sort data=work._tmp_results; by row_id; run;
     %end;
 
-    proc sql noprint;
-        select count(*) into :_errors trimmed
-        from work._tmp_results
-        where status='ERROR';
-    quit;
+    data _null_;
+        set work._tmp_results end=last;
+        retain errors 0;
+        if status='ERROR' then errors+1;
+        if last then call symputx('_errors',errors,'L');
+    run;
 
     %if &_errors>0 %then %do;
         %put ERROR: Transfer manifest preparation failed with &_errors error(s).;
@@ -241,31 +250,27 @@
         drop status message;
     run;
 
-    /* Keep original column order and Excel header labels. */
-    proc sql noprint;
-        select case
-            when varnum=&md5_col then
-                cats('b.md5 as ',nliteral(name),' label=',
-                     "'",tranwrd(coalescec(label,name),"'","''"),"'")
-            else
-                cats('a.',nliteral(name),' as ',nliteral(name),' label=',
-                     "'",tranwrd(coalescec(label,name),"'","''"),"'")
-        end
-        into :_select_list separated by ', '
-        from work._tmp_cols
-        order by varnum;
-    quit;
+    /* Put calculated MD5 back into the original Excel columns. */
+    data work._tmp_output;
+        if _n_=1 then do;
+            declare hash h(dataset:'work._tmp_results(keep=row_id md5)');
+            h.defineKey('row_id');
+            h.defineData('md5');
+            h.defineDone();
+        end;
 
-    proc sql;
-        create table work._tmp_output as
-        select &_select_list
-        from work._tmp_input as a
-        left join work._tmp_results as b on a.row_id=b.row_id
-        order by a.row_id;
-    quit;
+        set work._tmp_input(rename=(&_md5col=_old_md5));
+        length &_md5col $32 md5 $32;
+
+        rc=h.find();
+        if rc=0 then &_md5col=md5;
+        else &_md5col=strip(vvalue(_old_md5));
+
+        drop row_id rc md5 _old_md5;
+    run;
 
     proc export data=work._tmp_output
-        outfile="&result_xlsx" label dbms=xlsx replace;
+        outfile="&result_xlsx" dbms=xlsx replace;
         sheet="&sheet";
     run;
 
