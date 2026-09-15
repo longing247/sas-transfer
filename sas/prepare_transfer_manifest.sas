@@ -145,6 +145,8 @@
     %local _dircol _filecol _md5col _errors
            _zip_rows _zip_n _z _zip_row _select_list;
 
+    %let _errors=0;
+
     %if not %length(%superq(result_xlsx)) %then
         %let result_xlsx=%sysfunc(prxchange(s/\.xlsx$/_md5_%sysfunc(today(),yymmddn8.).xlsx/i,1,%superq(xlsx)));
 
@@ -275,8 +277,6 @@
 
         if eof then call symputx('_errors',errors,'L');
     run;
-
-    %if %sysevalf(%superq(_errors)=,boolean) %then %let _errors=0;
 
     %if &_errors>0 %then %do;
         %put ERROR: Transfer manifest preparation failed with &_errors error(s).;
