@@ -1,12 +1,10 @@
 /*
  * prepare_transfer_manifest.sas
  *
- * Row-based manifest processing:
- *   Excel -> validate each row -> MD5 -> inferred ZIP extraction
- *         -> transfer dataset -> formatted result workbook.
+ * Excel -> validate each row -> MD5 -> inferred ZIP extraction
+ *       -> transfer dataset -> result workbook.
  *
- * The result workbook is a copy of the input workbook. SAS then updates only
- * the configured MD5 cells through LIBNAME EXCEL so formatting is preserved.
+ * The result workbook is written with PROC EXPORT.
  */
 
 %macro _cleanup;
@@ -24,11 +22,6 @@
     quit;
 %mend _resolve__excel_columns;
 
-/*
- * Process one requested member from a ZIP.
- * DOPEN/DREAD uses a statement-assigned ZIP fileref. Member filerefs use the
- * physical ZIP path, matching the previously proven working implementation.
- */
 %macro _process_zip_member(row_id=);
     %local _zip_path;
 
@@ -127,8 +120,6 @@
                 cats('member=',quote(strip(first_member)))
             );
             rc2=filename('xout',transfer_path,'DISK','recfm=n');
-            putlog 'ZIP_EXTRACT_MEMBER_RC=' rc1;
-            putlog 'ZIP_EXTRACT_OUTPUT_RC=' rc2;
 
             if rc1 ne 0 or rc2 ne 0 then do;
                 status='ERROR';
@@ -150,15 +141,6 @@
     filename inzip clear;
 %mend _process_zip_member;
 
-/* Update one MD5 cell in the copied workbook. */
-%macro _update_excel_md5(row_id=, md5=);
-    proc sql;
-        update _tmpxl."&sheet.$"n
-           set &_xlmd5ref="&md5"
-         where monotonic()=&row_id;
-    quit;
-%mend _update_excel_md5;
-
 %macro prepare_transfer(
     xlsx=,
     sheet=Sheet1,
@@ -168,9 +150,8 @@
     file_col=4,
     md5_col=6
 );
-    %local _dircol _filecol _md5col _errors _copy_error
-           _xlmd5ref _xlmd5type _zip_rows _zip_n _z _zip_row
-           _excel_rows _excel_n _e _excel_row _excel_md5;
+    %local _dircol _filecol _md5col _errors
+           _zip_rows _zip_n _z _zip_row;
 
     %if not %length(%superq(result_xlsx)) %then
         %let result_xlsx=%sysfunc(prxchange(s/\.xlsx$/_md5_%sysfunc(today(),yymmddn8.).xlsx/i,1,%superq(xlsx)));
@@ -315,95 +296,34 @@
         drop status message;
     run;
 
-    %let _copy_error=0;
-    filename _tmpsrc "&xlsx" recfm=n;
-    filename _tmpdst "&result_xlsx" recfm=n;
-
-    data _null_;
-        length msg $500;
-
-        if fexist('_tmpdst') then rc=fdelete('_tmpdst');
-        rc=fcopy('_tmpsrc','_tmpdst');
-
-        if rc ne 0 then do;
-            msg=sysmsg();
-            putlog 'ERROR: Cannot copy result workbook. ' msg=;
-            call symputx('_copy_error',1,'L');
+    /* Put the calculated MD5 values back into the imported manifest rows. */
+    data work._tmp_output;
+        if _n_=1 then do;
+            declare hash h(dataset:'work._tmp_results(keep=row_id md5)');
+            h.defineKey('row_id');
+            h.defineData('md5');
+            h.defineDone();
         end;
+
+        set work._tmp_input;
+        length md5 $32;
+        rc=h.find();
+
+        if rc=0 then &_md5col=md5;
+
+        drop row_id md5 rc;
     run;
 
-    filename _tmpsrc clear;
-    filename _tmpdst clear;
-
-    %if &_copy_error %then %goto cleanup;
-
-    libname _tmpxl excel path="&result_xlsx" scantext=no filelock=yes;
-
-    %if %sysfunc(libref(_tmpxl)) ne 0 %then %do;
-        %put ERROR: Cannot open the copied workbook with the EXCEL LIBNAME engine.;
-        %goto delete_result;
-    %end;
-
-    proc contents data=_tmpxl."&sheet.$"n
-        out=work._tmp_xlcols(keep=name varnum type) noprint;
+    proc export data=work._tmp_output
+        outfile="&result_xlsx"
+        dbms=xlsx
+        replace;
+        sheet="&sheet";
     run;
 
-    data _null_;
-        set work._tmp_xlcols;
-
-        if varnum=&md5_col then do;
-            call symputx('_xlmd5ref',nliteral(name),'L');
-            call symputx('_xlmd5type',type,'L');
-        end;
-    run;
-
-    %if not %length(%superq(_xlmd5ref)) %then %do;
-        libname _tmpxl clear;
-        %goto delete_result;
+    %if &syserr>4 %then %do;
+        %put ERROR: Could not create result workbook: &result_xlsx;
     %end;
-
-    %if %superq(_xlmd5type) ne 2 %then %do;
-        %put ERROR: Format the Excel MD5 column as Text and retry.;
-        libname _tmpxl clear;
-        %goto delete_result;
-    %end;
-
-    /*
-     * The EXCEL engine in the target environment does not support DATA-step
-     * MODIFY/POINT access. Update the copied sheet one manifest row at a time
-     * through SQL instead.
-     */
-    proc sql noprint;
-        select row_id, md5
-          into :_excel_row1-:_excel_row9999,
-               :_excel_md51-:_excel_md59999
-          from work._tmp_results
-         order by row_id;
-        %let _excel_n=&sqlobs;
-    quit;
-
-    %do _e=1 %to &_excel_n;
-        %let _excel_row=&&_excel_row&_e;
-        %let _excel_md5=&&_excel_md5&_e;
-        %_update_excel_md5(row_id=&_excel_row,md5=&_excel_md5);
-
-        %if &sqlrc ne 0 %then %do;
-            libname _tmpxl clear;
-            %goto delete_result;
-        %end;
-    %end;
-
-    libname _tmpxl clear;
-    %goto cleanup;
-
-%delete_result:
-    filename _tmpdel "&result_xlsx" recfm=n;
-
-    data _null_;
-        if fexist('_tmpdel') then rc=fdelete('_tmpdel');
-    run;
-
-    filename _tmpdel clear;
 
 %cleanup:
     %_cleanup;
