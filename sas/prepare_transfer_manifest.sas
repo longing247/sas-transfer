@@ -117,7 +117,10 @@
                 extract_ref,
                 "%superq(_zip_path)",
                 'ZIP',
-                cats('member=',quote(strip(first_member)))
+                cats(
+                    'member=',quote(strip(first_member)),
+                    ' recfm=n lrecl=1048576'
+                )
             );
             rc2=filename('xout',transfer_path,'DISK','recfm=n lrecl=1048576');
 
@@ -296,7 +299,6 @@
         drop status message;
     run;
 
-    /* Put the calculated MD5 values back into the imported manifest rows. */
     data work._tmp_output;
         if _n_=1 then do;
             declare hash h(dataset:'work._tmp_results(keep=row_id md5)');
