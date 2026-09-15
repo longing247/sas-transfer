@@ -78,15 +78,17 @@
 
     /* ZIP checksum first, then all individual file checksums. */
     data _null_;
-        file "&_csv_path" dsd dlm=',' lrecl=32767;
+        file "&_csv_path" lrecl=32767;
 
-        put 'file_name' 'md5';
-        put "&_zip_name" "&_zip_md5";
+        put 'file_name,md5';
+        put "&_zip_name,&_zip_md5";
 
         do until(eof);
             set &data(keep=transfer_name md5) end=eof;
-            put transfer_name md5;
+            put transfer_name ',' md5;
         end;
+
+        stop;
     run;
 
 %mend package_transfer;
