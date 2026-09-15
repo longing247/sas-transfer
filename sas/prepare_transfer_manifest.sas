@@ -18,7 +18,6 @@
                member_md5 first_md5 $32 mem_ref extract_ref $8;
 
         status='OK';
-        message='';
         match_count=0;
 
         did=dopen('inzip');
@@ -73,14 +72,15 @@
         if status='OK' then do;
             md5=first_md5;
             transfer_path=cats(pathname('work'),'\_extract_',row_id,'_',transfer_name);
-
             extract_ref='zinmem';
-            rc1=filename(extract_ref,"%superq(_zip_path)",'ZIP',
-                         cats('member=',quote(strip(first_member)),
-                              ' recfm=n lrecl=1048576'));
-            rc2=filename('xout',transfer_path,'DISK','recfm=n lrecl=1048576');
 
-            if rc1 ne 0 or rc2 ne 0 then do;
+            rc=filename(extract_ref,"%superq(_zip_path)",'ZIP',
+                        cats('member=',quote(strip(first_member)),
+                             ' recfm=n lrecl=1048576'));
+            if rc=0 then
+                rc=filename('xout',transfer_path,'DISK','recfm=n lrecl=1048576');
+
+            if rc ne 0 then do;
                 status='ERROR';
                 message='Cannot prepare ZIP extraction.';
             end;
@@ -89,8 +89,8 @@
                 message=cats('Extraction failed: ',sysmsg());
             end;
 
-            rc1=filename(extract_ref);
-            rc2=filename('xout');
+            rc=filename(extract_ref);
+            rc=filename('xout');
         end;
 
         keep row_id directory_path file_name md5 source_type
@@ -123,7 +123,7 @@
         getnames=yes;
     run;
 
-    /* Resolve the requested Excel columns by position. */
+    /* Get column names from their Excel positions. */
     %let dsid=%sysfunc(open(work._tmp_raw));
     %if &dsid %then %do;
         %let _dircol=%sysfunc(varname(&dsid,&directory_col));
@@ -144,6 +144,7 @@
         row_id=_n_;
     run;
 
+    /* Validate normal files and calculate MD5. */
     data work._tmp_results;
         set work._tmp_input;
         length directory_path $1024 file_name $1024 source_type $3 md5 $32
@@ -156,7 +157,7 @@
 
         status='OK';
         transfer_name=scan(file_name,-1,'\/');
-        source_type=ifc(prxmatch('/\.zip$/i',strip(directory_path)),'ZIP','DIR');
+        source_type=ifc(prxmatch('/\.zip$/i',directory_path),'ZIP','DIR');
         whole_zip=(source_type='ZIP' and
                    upcase(transfer_name)=upcase(scan(directory_path,-1,'\/')));
 
@@ -193,7 +194,7 @@
              transfer_path transfer_name status message;
     run;
 
-    /* Save ZIP row numbers for processing outside the DATA step. */
+    /* Process files stored inside ZIP archives. */
     data _null_;
         set work._tmp_results(where=(status='ZIP')) end=last;
         count+1;
@@ -229,23 +230,14 @@
         drop status message;
     run;
 
-    /* Put calculated MD5 back into the original Excel columns. */
+    /* Put MD5 back into the original Excel data. */
     data work._tmp_output;
-        if _n_=1 then do;
-            declare hash h(dataset:'work._tmp_results(keep=row_id md5)');
-            h.defineKey('row_id');
-            h.defineData('md5');
-            h.defineDone();
-        end;
-
-        set work._tmp_input(rename=(&_md5col=_old_md5));
-        length &_md5col $32 md5 $32;
-
-        rc=h.find();
-        if rc=0 then &_md5col=md5;
-        else &_md5col=strip(vvalue(_old_md5));
-
-        drop row_id rc md5 _old_md5;
+        merge work._tmp_input(rename=(&_md5col=_old_md5))
+              work._tmp_results(keep=row_id md5);
+        by row_id;
+        length &_md5col $32;
+        &_md5col=md5;
+        drop row_id md5 _old_md5;
     run;
 
     proc export data=work._tmp_output
