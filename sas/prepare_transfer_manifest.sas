@@ -144,12 +144,17 @@
 );
     %local _dircol _filecol _md5col _errors
            _zip_rows _zip_n _z _zip_row _select_list
-           _xlsx _result_xlsx _result_name;
+           _xlsx _result_xlsx _result_name _folder;
 
     %let _errors=0;
-    %let _xlsx=%sysfunc(prxchange(s/[\\\/]+$//,1,%superq(folder)))\%superq(xlsx_name);
+
+    filename _cwd ".";
+    %let _folder=%sysfunc(pathname(_cwd));
+    filename _cwd clear;
+
+    %let _xlsx=&_folder.\%superq(xlsx_name);
     %let _result_name=%sysfunc(prxchange(s/\.xlsx$/_md5_%sysfunc(today(),yymmddn8.).xlsx/i,1,%superq(xlsx_name)));
-    %let _result_xlsx=%sysfunc(prxchange(s/[\\\/]+$//,1,%superq(folder)))\&_result_name;
+    %let _result_xlsx=&_folder.\&_result_name;
 
     proc datasets library=work nolist;
         delete md5_result;
