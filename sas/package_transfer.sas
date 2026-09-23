@@ -3,21 +3,23 @@
  *
  * Compress all prepared transfer files into one ZIP and create a CSV
  * containing the ZIP MD5 first, followed by each transfer file MD5.
+ * Both files are written to FOLDER.
  */
 
 %macro package_transfer(
     data=work.md5_result,
     study_id=,
     tag_id=,
-    outdir=
+    folder=
 );
-    %local _date _zip_name _csv_name _zip_path _csv_path _zip_md5 _errors;
+    %local _date _zip_name _csv_name _zip_path _csv_path _zip_md5 _errors _folder;
 
     %let _date=%sysfunc(today(),yymmddn8.);
     %let _zip_name=&_date._&study_id._&tag_id..zip;
     %let _csv_name=&_date._&study_id._&tag_id._md5.csv;
-    %let _zip_path=&outdir.\&_zip_name;
-    %let _csv_path=&outdir.\&_csv_name;
+    %let _folder=%sysfunc(prxchange(s/[\\\/]+$//,1,%superq(folder)));
+    %let _zip_path=&_folder.\&_zip_name;
+    %let _csv_path=&_folder.\&_csv_name;
     %let _errors=0;
 
     /* Remove an existing package with the same name. */
