@@ -4,8 +4,8 @@
  * Excel -> validate each row -> MD5 -> inferred ZIP extraction
  *       -> transfer dataset -> result workbook.
  *
- * The input workbook is read from FOLDER using XLSX_NAME.
- * The result workbook is written to the same folder with PROC EXPORT.
+ * The input workbook is read from the current SAS working directory
+ * using XLSX_NAME. The result workbook is written to the same directory.
  */
 
 %macro _cleanup;
@@ -135,7 +135,6 @@
 %mend _process_zip_member;
 
 %macro prepare_transfer(
-    folder=,
     xlsx_name=,
     sheet=Sheet1,
     out=work.md5_result,
