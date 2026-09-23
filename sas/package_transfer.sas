@@ -20,7 +20,6 @@
     %let _date=%sysfunc(today(),yymmddn8.);
     %let _zip_name=&_date._&study_id._&tag_id..zip;
     %let _csv_name=&_date._&study_id._&tag_id._md5.csv;
-    %let _folder=%sysfunc(prxchange(s/[\\\/]+$//,1,%superq(folder)));
     %let _zip_path=&_folder.\&_zip_name;
     %let _csv_path=&_folder.\&_csv_name;
     %let _errors=0;
