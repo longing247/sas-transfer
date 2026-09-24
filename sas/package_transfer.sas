@@ -42,7 +42,7 @@
 
         rc1=filename(inref,transfer_path,'DISK','recfm=n');
         rc2=filename(outref,"&_zip_path",'ZIP',
-                     cats('member=',quote(strip(transfer_name))));
+                     cats('member=',quote(strip(relative_path))));
 
         if rc1 ne 0 or rc2 ne 0 then do;
             errors+1;
@@ -88,8 +88,8 @@
         put "&_zip_name,&_zip_md5";
 
         do until(eof);
-            set &data(keep=transfer_name md5) end=eof;
-            put transfer_name ',' md5;
+            set &data(keep=relative_path md5) end=eof;
+            put relative_path ',' md5;
         end;
 
         stop;
