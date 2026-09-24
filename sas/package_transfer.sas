@@ -13,9 +13,7 @@
 );
     %local _date _zip_name _csv_name _zip_path _csv_path _zip_md5 _errors _folder;
 
-    filename _cwd ".";
-    %let _folder=%sysfunc(pathname(_cwd));
-    filename _cwd clear;
+    %let _folder=&program_dir;
 
     %let _date=%sysfunc(today(),yymmddn8.);
     %let _zip_name=&_date._&study_id._&tag_id..zip;
