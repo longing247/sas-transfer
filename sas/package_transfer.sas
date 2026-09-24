@@ -7,17 +7,26 @@
  */
 
 %macro package_transfer(
-    data=work.md5_result,
-    study_id=,
-    tag_id=
+    data=work.md5_result
 );
-    %local _date _zip_name _csv_name _zip_path _csv_path _zip_md5 _errors _folder;
+    %local _folder_name _date _study_id _tag_id
+           _zip_name _csv_name _zip_path _csv_path _zip_md5 _errors _folder;
 
     %let _folder=&program_dir;
+    %let _folder_name=%sysfunc(scan(%superq(_folder),-1,%str(\/)));
 
-    %let _date=%sysfunc(today(),yymmddn8.);
-    %let _zip_name=&_date._&study_id._&tag_id..zip;
-    %let _csv_name=&_date._&study_id._&tag_id._md5.csv;
+    /* Parse folder name: YYYYMMDD_STUDYID_TAGID. */
+    %let _date=%scan(%superq(_folder_name),1,_);
+    %let _study_id=%scan(%superq(_folder_name),2,_);
+    %let _tag_id=%scan(%superq(_folder_name),3,_);
+
+    %if not %sysfunc(prxmatch(%str(/^\d{8}_[^_]+_[^_]+$/),%superq(_folder_name))) %then %do;
+        %put ERROR: Program folder must follow YYYYMMDD_STUDYID_TAGID: &_folder_name;
+        %return;
+    %end;
+
+    %let _zip_name=&_date._&_study_id._&_tag_id..zip;
+    %let _csv_name=&_date._&_study_id._&_tag_id._md5.csv;
     %let _zip_path=&_folder.\&_zip_name;
     %let _csv_path=&_folder.\&_csv_name;
     %let _errors=0;
