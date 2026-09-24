@@ -8,6 +8,26 @@
  * using XLSX_NAME. The result workbook is written to the same directory.
  */
 
+/* Resolve the directory containing this SAS program. */
+data _null_;
+    length program_file program_dir $2048;
+    length pos 8;
+
+    program_file=dequote(strip(symget('_SASPROGRAMFILE')));
+
+    if missing(program_file) then
+        putlog 'ERROR: _SASPROGRAMFILE is empty.';
+    else do;
+        pos=findc(program_file,'\\/','b');
+
+        if pos>0 then do;
+            program_dir=substr(program_file,1,pos-1);
+            call symputx('program_dir',strip(program_dir),'G');
+        end;
+        else putlog 'ERROR: Cannot determine program directory from _SASPROGRAMFILE.';
+    end;
+run;
+
 %macro _cleanup;
     proc datasets library=work nolist;
         delete _tmp_:;
@@ -150,9 +170,7 @@
 
     %let _errors=0;
 
-    filename _cwd ".";
-    %let _folder=%sysfunc(pathname(_cwd));
-    filename _cwd clear;
+    %let _folder=&program_dir;
 
     %let _xlsx=&_folder.\%superq(xlsx_name);
     %let _result_name=%sysfunc(prxchange(s/\.xlsx$/_md5_%sysfunc(today(),yymmddn8.).xlsx/i,1,%superq(xlsx_name)));
