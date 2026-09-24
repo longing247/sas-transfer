@@ -14,12 +14,13 @@
     quit;
 %mend _cleanup;
 
-%macro _resolve__excel_columns(data=, directory_col=, file_col=, md5_col=);
+%macro _resolve__excel_columns(data=, directory_col=, file_col=, md5_col=, data_type_col=);
     proc contents data=&data out=work._tmp_cols(keep=name varnum) noprint; run;
     proc sql noprint;
         select name into :_dircol trimmed from work._tmp_cols where varnum=&directory_col;
         select name into :_filecol trimmed from work._tmp_cols where varnum=&file_col;
         select name into :_md5col trimmed from work._tmp_cols where varnum=&md5_col;
+        select name into :_datatypecol trimmed from work._tmp_cols where varnum=&data_type_col;
     quit;
 %mend _resolve__excel_columns;
 
@@ -128,7 +129,7 @@
         end;
 
         keep row_id directory_path file_name md5 source_type
-             transfer_path transfer_name status message;
+             transfer_path transfer_name data_type relative_path status message;
     run;
 
     filename inzip clear;
@@ -140,9 +141,10 @@
     out=work.md5_result,
     directory_col=1,
     file_col=4,
-    md5_col=6
+    md5_col=6,
+    data_type_col=8
 );
-    %local _dircol _filecol _md5col _errors
+    %local _dircol _filecol _md5col _datatypecol _errors
            _zip_rows _zip_n _z _zip_row _select_list
            _xlsx _result_xlsx _result_name _folder;
 
@@ -171,12 +173,14 @@
         data=work._tmp_raw,
         directory_col=&directory_col,
         file_col=&file_col,
-        md5_col=&md5_col
+        md5_col=&md5_col,
+        data_type_col=&data_type_col
     );
 
     %if not %length(%superq(_dircol)) or
         not %length(%superq(_filecol)) or
-        not %length(%superq(_md5col)) %then %do;
+        not %length(%superq(_md5col)) or
+        not %length(%superq(_datatypecol)) %then %do;
         %put ERROR: One or more requested Excel column indexes do not exist.;
         %goto cleanup;
     %end;
@@ -191,10 +195,12 @@
 
         length directory_path $1024 file_name $1024
                source_type $3 md5 $32 transfer_path $2048 transfer_name $1024
+               data_type $1024 relative_path $2048
                status $8 message $500 fileref $8;
 
         directory_path=strip(vvaluex("&_dircol"));
         file_name=strip(vvaluex("&_filecol"));
+        data_type=strip(vvaluex("&_datatypecol"));
 
         if missing(directory_path) and missing(file_name) then delete;
 
@@ -212,6 +218,10 @@
         else if missing(file_name) then do;
             status='ERROR';
             message='FILE_NAME is required.';
+        end;
+        else if missing(data_type) then do;
+            status='ERROR';
+            message='DATA_TYPE is required.';
         end;
 
         if status='OK' and source_type='ZIP' and not whole_zip then do;
@@ -243,7 +253,7 @@
         end;
 
         keep row_id directory_path file_name md5 source_type
-             transfer_path transfer_name status message;
+             transfer_path transfer_name data_type relative_path status message;
     run;
 
     proc sql noprint;
