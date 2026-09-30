@@ -34,13 +34,12 @@ run;
     quit;
 %mend _cleanup;
 
-%macro _resolve__excel_columns(data=, directory_col=, file_col=, md5_col=, data_type_col=);
+%macro _resolve__excel_columns(data=, directory_col=, file_col=, md5_col=);
     proc contents data=&data out=work._tmp_cols(keep=name varnum) noprint; run;
     proc sql noprint;
         select name into :_dircol trimmed from work._tmp_cols where varnum=&directory_col;
         select name into :_filecol trimmed from work._tmp_cols where varnum=&file_col;
         select name into :_md5col trimmed from work._tmp_cols where varnum=&md5_col;
-        select name into :_datatypecol trimmed from work._tmp_cols where varnum=&data_type_col;
     quit;
 %mend _resolve__excel_columns;
 
@@ -161,10 +160,9 @@ run;
     out=work.md5_result,
     directory_col=1,
     file_col=4,
-    md5_col=6,
-    data_type_col=8
+    md5_col=6
 );
-    %local _dircol _filecol _md5col _datatypecol _errors
+    %local _dircol _filecol _md5col _errors
            _zip_rows _zip_n _z _zip_row _select_list
            _xlsx _result_xlsx _result_name _folder;
 
@@ -191,14 +189,12 @@ run;
         data=work._tmp_raw,
         directory_col=&directory_col,
         file_col=&file_col,
-        md5_col=&md5_col,
-        data_type_col=&data_type_col
+        md5_col=&md5_col
     );
 
     %if not %length(%superq(_dircol)) or
         not %length(%superq(_filecol)) or
-        not %length(%superq(_md5col)) or
-        not %length(%superq(_datatypecol)) %then %do;
+        not %length(%superq(_md5col)) %then %do;
         %put ERROR: One or more requested Excel column indexes do not exist.;
         %goto cleanup;
     %end;
@@ -218,7 +214,6 @@ run;
 
         directory_path=strip(vvaluex("&_dircol"));
         file_name=strip(vvaluex("&_filecol"));
-        data_type=strip(vvaluex("&_datatypecol"));
 
         if missing(directory_path) and missing(file_name) then delete;
 
@@ -237,10 +232,17 @@ run;
             status='ERROR';
             message='FILE_NAME is required.';
         end;
-        else if missing(data_type) then do;
-            status='ERROR';
-            message='DATA_TYPE is required.';
+
+        if status='OK' then do;
+            if index(upcase(directory_path),'INTERIM\\EXPORT') then data_type='RAW_CRF';
+            else if index(upcase(directory_path),'INTERIM\\DATA') then data_type='RAW_EXTERNAL';
+            else do;
+                status='ERROR';
+                message='Cannot determine data type from source path.';
+            end;
         end;
+
+        if status='OK' then relative_path=cats(data_type,'/',transfer_name);
 
         if status='OK' and source_type='ZIP' and not whole_zip then do;
             status='ZIP';
