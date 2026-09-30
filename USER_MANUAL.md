@@ -148,16 +148,13 @@ outer.zip
 Include or run `sas/prepare_transfer_manifest.sas`, then call:
 
 ```sas
-%prepare_transfer(
-    xlsx_name=transfer_manifest.xlsx
-);
+%prepare_transfer;
 ```
 
 The default arguments are:
 
 ```sas
 %prepare_transfer(
-    xlsx_name=,
     sheet=Sheet1,
     out=work.md5_result,
     directory_col=1,
@@ -166,18 +163,12 @@ The default arguments are:
 );
 ```
 
-`xlsx_name` is a filename, not a full path. The workbook is expected in `program_dir`.
+The input workbook name is fixed internally as `template.xlsx`. It must be located in `program_dir`; no workbook-name argument is required.
 
-For a workbook named:
-
-```text
-transfer_manifest.xlsx
-```
-
-the result workbook is created in the same program directory using:
+The result workbook is created in the same program directory using:
 
 ```text
-transfer_manifest_md5_YYYYMMDD.xlsx
+template_md5_YYYYMMDD.xlsx
 ```
 
 The date in this result-workbook filename is the SAS execution date.
@@ -304,9 +295,7 @@ A typical calling program is:
 ```sas
 /* Load the macro definitions as appropriate for your SAS environment. */
 
-%prepare_transfer(
-    xlsx_name=transfer_manifest.xlsx
-);
+%prepare_transfer;
 
 %package_transfer;
 ```
@@ -316,8 +305,8 @@ The calling `.sas` file should be located in the correctly named transfer folder
 ```text
 20260922_ABC1101-01_ia/
 ├── program.sas
-├── transfer_manifest.xlsx
-├── transfer_manifest_md5_20260924.xlsx   <- created by prepare_transfer
+├── template.xlsx
+├── template_md5_20260924.xlsx            <- created by prepare_transfer
 ├── 20260922_ABC1101-01_ia.zip            <- created by package_transfer
 └── 20260922_ABC1101-01_ia_md5.csv        <- created by package_transfer
 ```
