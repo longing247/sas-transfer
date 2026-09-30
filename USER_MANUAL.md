@@ -46,7 +46,6 @@ By default the following Excel column positions are used:
 | 1 | Source directory or ZIP path | Yes |
 | 4 | File name | Yes |
 | 6 | MD5 checksum output | Yes |
-| 8 | Data type / destination subfolder | Yes |
 
 Other columns are preserved in the exported result workbook.
 
@@ -58,28 +57,16 @@ options validvarname=any;
 
 The macros resolve the required fields by **column position**, not by fixed Excel header names.
 
-### Data type
+### Package subfolder derivation
 
-Column 8 is treated as a free-form destination folder name. It is not restricted to a predefined list.
-
-For example:
+The package subfolder is derived automatically from the source path; no Data type column is expected in Excel.
 
 ```text
-Data type    File
-RAW_A        file1.xpt
-RAW_B        file2.xpt
-SPECIAL      file3.csv
+source path contains INTERIM\\EXPORT -> RAW_CRF
+source path contains INTERIM\\DATA   -> RAW_EXTERNAL
 ```
 
-produces relative paths:
-
-```text
-RAW_A/file1.xpt
-RAW_B/file2.xpt
-SPECIAL/file3.csv
-```
-
-A missing Data type is an error.
+If neither path pattern is present, preparation fails because the package destination cannot be determined.
 
 ## 4. Supported source-file cases
 
@@ -175,8 +162,7 @@ The default arguments are:
     out=work.md5_result,
     directory_col=1,
     file_col=4,
-    md5_col=6,
-    data_type_col=8
+    md5_col=6
 );
 ```
 
@@ -203,7 +189,7 @@ Each non-empty manifest row is checked. Preparation fails when, for example:
 - the configured Excel column position does not exist;
 - source directory/ZIP path is missing;
 - file name is missing;
-- Data type is missing;
+- the source path contains neither `INTERIM\\EXPORT` nor `INTERIM\\DATA`;
 - a physical source file does not exist;
 - a requested ZIP member cannot be found;
 - matching duplicate ZIP members have different MD5 values;
@@ -231,15 +217,15 @@ Important generated variables include:
 | `source_type` | `DIR` or `ZIP` |
 | `transfer_path` | Physical file SAS will put into the package |
 | `transfer_name` | Leaf filename |
-| `data_type` | Value read from Excel column 8 |
+| `data_type` | Generated package category: `RAW_CRF` or `RAW_EXTERNAL` |
 | `relative_path` | Data type folder plus transfer filename |
 
 For example:
 
 ```text
 transfer_name = file1.xpt
-data_type     = RAW_A
-relative_path = RAW_A/file1.xpt
+data_type     = RAW_CRF
+relative_path = RAW_CRF/file1.xpt
 ```
 
 `transfer_path` and `relative_path` serve different purposes. `transfer_path` identifies the physical source/extracted file. `relative_path` identifies where that file belongs inside the final package.
@@ -283,42 +269,33 @@ If a ZIP with the same package filename already exists, the macro removes it bef
 
 `relative_path` is used as the ZIP member path.
 
-Given:
-
-```text
-RAW_A  file1.xpt
-RAW_A  file2.xpt
-RAW_B  file3.csv
-```
+For files whose source paths map to the two supported categories, the final package can contain:
 
 the final package is:
 
 ```text
 20260922_ABC1101-01_ia.zip
-├── RAW_A/
+├── RAW_CRF/
 │   ├── file1.xpt
 │   └── file2.xpt
-└── RAW_B/
+└── RAW_EXTERNAL/
     └── file3.csv
 ```
 
-Any nonmissing Data type value can create a subfolder; `RAW_A` and `RAW_B` are examples, not hard-coded allowed values.
+`RAW_CRF` is selected for source paths containing `INTERIM\\EXPORT`; `RAW_EXTERNAL` is selected for paths containing `INTERIM\\DATA`.
 
 ## 9. MD5 summary CSV
 
 After the ZIP is complete, `package_transfer` calculates the MD5 of the final ZIP.
 
-The CSV contains the final package first, followed by every individual transfer file using its relative path:
+The summary CSV contains only the final package MD5:
 
 ```csv
 file_name,md5
 20260922_ABC1101-01_ia.zip,<package_md5>
-RAW_A/file1.xpt,<file1_md5>
-RAW_A/file2.xpt,<file2_md5>
-RAW_B/file3.csv,<file3_md5>
 ```
 
-The relative path in the CSV therefore corresponds directly to the member path inside the ZIP.
+Individual file MD5 values are still calculated during preparation and written to the sister Excel result workbook for inspection. They are not repeated in the package summary CSV.
 
 ## 10. Typical end-to-end program
 
@@ -365,7 +342,7 @@ Do not rename or move the calling SAS program to a folder that does not follow t
 
 **`One or more requested Excel column indexes do not exist`** — Confirm that the imported worksheet has at least the configured columns and that the correct sheet is being read.
 
-**`DATA_TYPE is required`** — Column 8 is empty for a manifest row. Supply the desired destination subfolder name.
+**`Cannot determine data type from source path`** — The source path contains neither `INTERIM\\EXPORT` nor `INTERIM\\DATA`. Confirm that the manifest points to a supported source location.
 
 **`Source file does not exist`** — Check the directory path and filename in the manifest and confirm the SAS server can access that location.
 
@@ -377,6 +354,6 @@ Do not rename or move the calling SAS program to a folder that does not follow t
 
 ## 13. Current scope
 
-The implemented workflow covers manifest preparation, MD5 calculation, direct files, whole ZIPs, files located in folders inside ZIPs, Data type based package subfolders, final ZIP creation, and MD5 CSV creation.
+The implemented workflow covers manifest preparation, MD5 calculation, direct files, whole ZIPs, files located in folders inside ZIPs, path-derived `RAW_CRF` / `RAW_EXTERNAL` package subfolders, final ZIP creation, and MD5 CSV creation.
 
 Recursive traversal into ZIP files contained inside another ZIP is not currently implemented.
