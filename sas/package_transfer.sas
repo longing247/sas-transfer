@@ -2,7 +2,7 @@
  * package_transfer.sas
  *
  * Compress all prepared transfer files into one ZIP and create a CSV
- * containing the ZIP MD5 first, followed by each transfer file MD5.
+ * containing the final ZIP MD5.
  * Both files are written to the current SAS working directory.
  */
 
@@ -87,19 +87,12 @@
         %return;
     %end;
 
-    /* ZIP checksum first, then all individual file checksums. */
+    /* Write only the final ZIP checksum to the summary CSV. */
     data _null_;
         file "&_csv_path" lrecl=32767;
 
         put 'file_name,md5';
         put "&_zip_name,&_zip_md5";
-
-        do until(eof);
-            set &data(keep=relative_path md5) end=eof;
-            put relative_path ',' md5;
-        end;
-
-        stop;
     run;
 
 %mend package_transfer;
