@@ -155,7 +155,6 @@ run;
 %mend _process_zip_member;
 
 %macro prepare_transfer(
-    xlsx_name=,
     sheet=Sheet1,
     out=work.md5_result,
     directory_col=1,
@@ -164,9 +163,10 @@ run;
 );
     %local _dircol _filecol _md5col _errors
            _zip_rows _zip_n _z _zip_row _select_list
-           _xlsx _result_xlsx _result_name _folder;
+           _xlsx _result_xlsx _result_name _folder xlsx_name;
 
     %let _errors=0;
+    %let xlsx_name=template.xlsx;
 
     %let _folder=&program_dir;
 
