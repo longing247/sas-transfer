@@ -88,7 +88,7 @@
             cats(
                 'host=',quote("&host"),' ',
                 'user=',quote("&user"),' ',
-                'recfm=s ',
+                'recfm=n ',
                 'optionsx=',quote(trim(sftp_options))
             )
         );
