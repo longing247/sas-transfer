@@ -4,9 +4,10 @@
  * Sister utility for sftp_upload_manifest.sas.
  *
  * - tests SFTP connectivity using the same SSH-key authentication;
- * - optionally deletes one explicitly named remote file.
+ * - optionally deletes one explicitly named remote file;
+ * - optionally deletes one explicitly named empty remote folder.
  *
- * Set DELETE=Y only when the named remote file should be removed.
+ * Deletion is opt-in.
  */
 
 %macro sftp_test_connection(
@@ -15,16 +16,17 @@
     remote_dir=,
     keyfile=,
     port=22,
-    delete=N,
-    file_name=
+    delete_file=N,
+    file_name=,
+    delete_folder=N,
+    folder_name=
 );
-    %local _sftp_options _delete;
+    %local _sftp_options _delete_file _delete_folder;
 
     %let _sftp_options=-P &port -i "%superq(keyfile)";
-    %let _delete=%upcase(%superq(delete));
+    %let _delete_file=%upcase(%superq(delete_file));
+    %let _delete_folder=%upcase(%superq(delete_folder));
 
-    /* Assign the remote directory.  A successful DOPEN confirms that
-       SAS can authenticate and access the requested SFTP directory. */
     filename sftptest SFTP "%superq(remote_dir)"
         host="&host"
         user="&user"
@@ -46,10 +48,10 @@
 
     filename sftptest clear;
 
-    /* Deletion is deliberately opt-in and requires an explicit file name. */
-    %if &_delete=Y %then %do;
+    /* Delete one explicitly named remote file. */
+    %if &_delete_file=Y %then %do;
         %if not %length(%superq(file_name)) %then %do;
-            %put ERROR: FILE_NAME is required when DELETE=Y.;
+            %put ERROR: FILE_NAME is required when DELETE_FILE=Y.;
             %return;
         %end;
 
@@ -79,8 +81,48 @@
 
         filename sftpdel clear;
     %end;
-    %else %if &_delete ne N %then
-        %put ERROR: DELETE must be Y or N.;
+    %else %if &_delete_file ne N %then
+        %put ERROR: DELETE_FILE must be Y or N.;
+
+    /* Delete one explicitly named empty remote folder. */
+    %if &_delete_folder=Y %then %do;
+        %if not %length(%superq(folder_name)) %then %do;
+            %put ERROR: FOLDER_NAME is required when DELETE_FOLDER=Y.;
+            %return;
+        %end;
+
+        filename sftpdir SFTP "%superq(remote_dir)"
+            host="&host"
+            user="&user"
+            optionsx="&_sftp_options";
+
+        data _null_;
+            length message $500;
+            did=dopen('sftpdir');
+
+            if did>0 then do;
+                rc=ddelete("%superq(folder_name)",did);
+
+                if rc=0 then
+                    putlog "NOTE: SFTP folder deleted: %superq(folder_name)";
+                else do;
+                    message=sysmsg();
+                    putlog 'ERROR: SFTP folder could not be deleted. '
+                           'The folder must be empty. ' message;
+                end;
+
+                rc_close=dclose(did);
+            end;
+            else do;
+                message=sysmsg();
+                putlog 'ERROR: SFTP parent directory could not be opened. ' message;
+            end;
+        run;
+
+        filename sftpdir clear;
+    %end;
+    %else %if &_delete_folder ne N %then
+        %put ERROR: DELETE_FOLDER must be Y or N.;
 %mend sftp_test_connection;
 
 
@@ -95,14 +137,26 @@ Example: connection test only
 );
 
 
-Example: test connection and delete one known file
+Example: delete one known file
 
 %sftp_test_connection(
     host=example.com,
     user=myuser,
     remote_dir=/incoming,
     keyfile=C:\keys\id_rsa,
-    delete=Y,
+    delete_file=Y,
     file_name=test.txt
+);
+
+
+Example: delete an empty folder /incoming/test_batch
+
+%sftp_test_connection(
+    host=example.com,
+    user=myuser,
+    remote_dir=/incoming,
+    keyfile=C:\keys\id_rsa,
+    delete_folder=Y,
+    folder_name=test_batch
 );
 */
