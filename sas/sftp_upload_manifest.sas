@@ -1,84 +1,73 @@
 /*
  * sftp_upload_manifest.sas
  *
- * Uploads TRANSFER_PATH values produced by %prepare_transfer_manifest().
+ * Uploads the final transfer package ZIP and its MD5 summary CSV.
  *
- * Production assumptions are intentionally simple:
- * - key authentication only;
- * - every manifest row has SFTP_TARGET;
- * - BATCH_ID is supplied by the caller;
- * - REMOTE_DIR is used only for the completed Excel manifest.
+ * The files are derived from PROGRAM_DIR, so this macro can run in a
+ * separate SAS session after the preparation/package session has ended.
  *
  * Remote batch directories must already exist.
  */
 
 %macro sftp_upload_manifest(
-    data=,
-    excel=,
     host=,
     user=,
     remote_dir=,
-    batch_id=,
     keyfile=,
     passphrase=,
     port=22,
     out=work.sftp_upload_log
 );
-    %if not %length(%superq(batch_id)) %then %do;
-        %put ERROR: BATCH_ID is required.;
+    %local _folder _folder_name _date _study_id _tag_id
+           _zip_name _csv_name _zip_path _csv_path;
+
+    %let _folder=&program_dir;
+    %let _folder_name=%sysfunc(scan(%superq(_folder),-1,%str(\/)));
+
+    /* Parse folder name: YYYYMMDD_STUDYID_TAGID. */
+    %let _date=%scan(%superq(_folder_name),1,_);
+    %let _study_id=%scan(%superq(_folder_name),2,_);
+    %let _tag_id=%scan(%superq(_folder_name),3,_);
+
+    %if not %sysfunc(prxmatch(%str(/^\d{8}_[^_]+_[^_]+$/),%superq(_folder_name))) %then %do;
+        %put ERROR: Program folder must follow YYYYMMDD_STUDYID_TAGID: &_folder_name;
         %return;
     %end;
 
-    /* One upload row per unique resolved local file. */
-    proc sort data=&data(
-        keep=transfer_path transfer_name sftp_target
-        where=(not missing(transfer_path))
-    ) out=work._upload_files nodupkey;
-        by transfer_path transfer_name sftp_target;
-    run;
+    %let _zip_name=&_date._&_study_id._&_tag_id..zip;
+    %let _csv_name=&_date._&_study_id._&_tag_id._md5.csv;
+    %let _zip_path=&_folder.\&_zip_name;
+    %let _csv_path=&_folder.\&_csv_name;
 
+    /* Build the two persistent files produced by PACKAGE_TRANSFER. */
     data work._upload_files;
-        set work._upload_files end=eof;
-        length local_path $2048 target_dir $2048 batch_id $64;
+        length local_path $2048 transfer_name $1024;
 
-        batch_id="&batch_id";
-        local_path=transfer_path;
-        target_dir=cats(prxchange('s/\/+$/','1',strip(sftp_target)),'/',batch_id);
+        local_path="&_zip_path";
+        transfer_name="&_zip_name";
         output;
 
-        /* Upload the completed manifest to REMOTE_DIR/BATCH_ID. */
-        %if %length(%superq(excel)) %then %do;
-            if eof then do;
-                local_path="&excel";
-                transfer_name=scan(local_path,-1,'\\/');
-                target_dir=cats(prxchange('s/\/+$/','1',strip("&remote_dir")),'/',batch_id);
-                output;
-            end;
-        %end;
-
-        keep local_path transfer_name target_dir batch_id;
+        local_path="&_csv_path";
+        transfer_name="&_csv_name";
+        output;
     run;
 
-    /* Native SAS SFTP filename engine, key authentication only. */
+    /* Native SAS SFTP filename engine, key authentication. */
     data &out;
         set work._upload_files;
         length remote_file $2048 localref $8 remoteref $8
                status $40 message $500 sftp_options $2048;
         format upload_dttm e8601dt19.;
+
         upload_dttm=datetime();
+        remote_file=cats(prxchange('s/\/+$/','1',strip("&remote_dir")),
+                         '/',strip(transfer_name));
 
-        if missing(target_dir) then do;
-            status='SFTP_TARGET_ERROR';
-            message='SFTP target directory is missing.';
-            output;
-            return;
-        end;
-
-        remote_file=cats(prxchange('s/\/+$/','1',strip(target_dir)),'/',strip(transfer_name));
         localref='localf';
         remoteref='remotef';
 
-        rc_local=filename(localref,local_path);
+        rc_local=filename(localref,local_path,'DISK','recfm=n lrecl=1048576');
+
         if rc_local ne 0 or fexist(localref)=0 then do;
             status='LOCAL_FILE_ERROR';
             message=sysmsg();
@@ -92,9 +81,17 @@
             sftp_options=cats(sftp_options,' -pw ',quote("&passphrase"));
         %end;
 
-        rc_remote=filename(remoteref,remote_file,'SFTP',cats(
-            'host=',quote("&host"),' ','user=',quote("&user"),' ',
-            'recfm=s ','optionsx=',quote(trim(sftp_options))));
+        rc_remote=filename(
+            remoteref,
+            remote_file,
+            'SFTP',
+            cats(
+                'host=',quote("&host"),' ',
+                'user=',quote("&user"),' ',
+                'recfm=s ',
+                'optionsx=',quote(trim(sftp_options))
+            )
+        );
 
         if rc_remote ne 0 then do;
             status='SFTP_ASSIGN_ERROR';
@@ -102,6 +99,7 @@
         end;
         else do;
             rc_copy=fcopy(localref,remoteref);
+
             if rc_copy=0 then do;
                 status='UPLOADED';
                 message='';
@@ -116,7 +114,7 @@
         rc2=filename(remoteref);
         output;
 
-        keep batch_id local_path remote_file upload_dttm status message;
+        keep local_path remote_file upload_dttm status message;
     run;
 
     proc datasets library=work nolist;
