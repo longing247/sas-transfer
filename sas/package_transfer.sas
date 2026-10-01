@@ -47,9 +47,10 @@
         inref='pkgin';
         outref='pkgout';
 
-        rc1=filename(inref,transfer_path,'DISK','recfm=n');
+        rc1=filename(inref,transfer_path,'DISK','recfm=n lrecl=1048576');
         rc2=filename(outref,"&_zip_path",'ZIP',
-                     cats('member=',quote(strip(relative_path))));
+                     cats('member=',quote(strip(relative_path)),
+                          ' recfm=n lrecl=1048576'));
 
         if rc1 ne 0 or rc2 ne 0 then do;
             errors+1;
