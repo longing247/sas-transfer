@@ -14,7 +14,6 @@
     user=,
     remote_dir=,
     keyfile=,
-    passphrase=,
     port=22,
     out=work.sftp_upload_log
 );
@@ -77,10 +76,6 @@
         end;
 
         sftp_options=cats('-P &port -i ',quote(strip("&keyfile")));
-        %if %length(%superq(passphrase)) %then %do;
-            sftp_options=cats(sftp_options,' -pw ',quote("&passphrase"));
-        %end;
-
         rc_remote=filename(
             remoteref,
             remote_file,
