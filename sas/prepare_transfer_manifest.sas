@@ -209,7 +209,7 @@ run;
 
         length directory_path $1024 file_name $1024
                source_type $3 md5 $32 transfer_path $2048 transfer_name $1024
-               data_type $1024 relative_path $2048
+               package_name $1024 data_type $1024 relative_path $2048
                status $8 message $500 fileref $8;
 
         directory_path=strip(vvaluex("&_dircol"));
@@ -242,7 +242,15 @@ run;
             end;
         end;
 
-        if status='OK' then relative_path=cats(data_type,'/',transfer_name);
+        if status='OK' then do;
+            package_name=transfer_name;
+
+            /* Customize these two strings when a packaged filename must be renamed. */
+            if index(upcase(directory_path),upcase('uniqueString')) then
+                package_name=tranwrd(package_name,'thingsToBeRemoved','');
+
+            relative_path=cats(data_type,'/',package_name);
+        end;
 
         if status='OK' and source_type='ZIP' and not whole_zip then do;
             status='ZIP';
