@@ -6,7 +6,8 @@
  * The files are derived from PROGRAM_DIR, so this macro can run in a
  * separate SAS session after the preparation/package session has ended.
  *
- * Remote batch directories must already exist.
+ * A remote upload directory named after the PROGRAM_DIR folder is created
+ * under REMOTE_DIR for each upload.
  */
 
 %macro sftp_upload_manifest(
@@ -18,7 +19,7 @@
     out=work.sftp_upload_log
 );
     %local _folder _folder_name _date _study_id _tag_id
-           _zip_name _csv_name _zip_path _csv_path;
+           _zip_name _csv_name _zip_path _csv_path _remote_upload_dir;
 
     %let _folder=&program_dir;
     %let _folder_name=%sysfunc(scan(%superq(_folder),-1,%str(\/)));
@@ -37,6 +38,38 @@
     %let _csv_name=&_date._&_study_id._&_tag_id._md5.csv;
     %let _zip_path=&_folder.\&_zip_name;
     %let _csv_path=&_folder.\&_csv_name;
+    %let _remote_upload_dir=%sysfunc(prxchange(s/\/+$/,,%superq(remote_dir)))/&_folder_name;
+
+    /* Create REMOTE_DIR/YYYYMMDD_STUDYID_TAGID before uploading files. */
+    filename sftppar SFTP "%superq(remote_dir)"
+        host="&host"
+        user="&user"
+        optionsx="-P &port -i %sysfunc(quote(%superq(keyfile)))";
+
+    data _null_;
+        length message $500;
+        did=dopen('sftppar');
+
+        if did>0 then do;
+            rc=dcreate("&_folder_name",'sftppar');
+
+            if rc=0 then do;
+                message=sysmsg();
+                putlog 'NOTE: Remote upload directory already exists or could not be created: '
+                       "&_remote_upload_dir" '. ' message;
+            end;
+            else
+                putlog "NOTE: Remote upload directory created: &_remote_upload_dir";
+
+            rc_close=dclose(did);
+        end;
+        else do;
+            message=sysmsg();
+            putlog 'ERROR: Remote parent directory could not be opened. ' message;
+        end;
+    run;
+
+    filename sftppar clear;
 
     /* Build the two persistent files produced by PACKAGE_TRANSFER. */
     data work._upload_files;
@@ -59,8 +92,7 @@
         format upload_dttm e8601dt19.;
 
         upload_dttm=datetime();
-        remote_file=cats(prxchange('s/\/+$/','1',strip("&remote_dir")),
-                         '/',strip(transfer_name));
+        remote_file=cats("&_remote_upload_dir",'/',strip(transfer_name));
 
         localref='localf';
         remoteref='remotef';
