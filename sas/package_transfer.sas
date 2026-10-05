@@ -3,7 +3,7 @@
  *
  * Compress all prepared transfer files into one ZIP and create a CSV
  * containing the final ZIP MD5.
- * Both files are written to the current SAS working directory.
+ * An upload_snapshot.sas7bdat dataset records the two final files for SFTP.
  */
 
 %macro package_transfer(
@@ -31,41 +31,32 @@
     %let _csv_path=&_folder.\&_csv_name;
     %let _errors=0;
 
-    /* Remove an existing package with the same name. */
     filename _pkgzip "&_zip_path" recfm=n;
     data _null_;
         if fexist('_pkgzip') then rc=fdelete('_pkgzip');
     run;
     filename _pkgzip clear;
 
-    /* Add every prepared transfer file to the ZIP. */
     data _null_;
         set &data end=eof;
         length inref outref $8 msg $500;
         retain errors 0;
-
         inref='pkgin';
         outref='pkgout';
-
         rc1=filename(inref,transfer_path,'DISK','recfm=n lrecl=1048576');
         rc2=filename(outref,"&_zip_path",'ZIP',
                      cats('member=',quote(strip(relative_path)),
                           ' recfm=n lrecl=1048576'));
-
         if rc1 ne 0 or rc2 ne 0 then do;
-            errors+1;
-            msg=sysmsg();
+            errors+1; msg=sysmsg();
             putlog 'ERROR: Cannot prepare ZIP member. ' transfer_path= msg=;
         end;
         else if fcopy(inref,outref) ne 0 then do;
-            errors+1;
-            msg=sysmsg();
+            errors+1; msg=sysmsg();
             putlog 'ERROR: Cannot add file to ZIP. ' transfer_path= msg=;
         end;
-
         rc1=filename(inref);
         rc2=filename(outref);
-
         if eof then call symputx('_errors',errors,'L');
     run;
 
@@ -74,7 +65,6 @@
         %return;
     %end;
 
-    /* Compute MD5 of the completed ZIP. */
     filename _pkgmd5 "&_zip_path";
     data _null_;
         length zip_md5 $32;
@@ -88,12 +78,29 @@
         %return;
     %end;
 
-    /* Write only the final ZIP checksum to the summary CSV. */
     data _null_;
         file "&_csv_path" lrecl=32767;
-
         put 'file_name,md5';
         put "&_zip_name,&_zip_md5";
     run;
+
+    /* Persist the exact final files that the later SFTP session must upload. */
+    libname _uplsnap "&_folder";
+
+    data _uplsnap.upload_snapshot;
+        length file_type $8 file_name $1024 file_path $2048;
+
+        file_type='PACKAGE';
+        file_name="&_zip_name";
+        file_path="&_zip_path";
+        output;
+
+        file_type='MD5';
+        file_name="&_csv_name";
+        file_path="&_csv_path";
+        output;
+    run;
+
+    libname _uplsnap clear;
 
 %mend package_transfer;
