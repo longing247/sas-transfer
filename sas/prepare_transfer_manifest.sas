@@ -170,6 +170,14 @@ run;
 
     %let _folder=&program_dir;
 
+    /* Write the SAS log beside this program for later inspection. */
+    proc printto log="&_folder.\prepare_transfer_manifest.log" new;
+    run;
+
+    %put NOTE: ===== PREPARE_TRANSFER STARTED =====;
+    %put NOTE: Program directory: &_folder.;
+    %put NOTE: Input workbook: &xlsx_name.;
+
     %let _xlsx=&_folder.\%superq(xlsx_name);
     %let _result_name=%sysfunc(prxchange(s/\.xlsx$/_md5_%sysfunc(today(),yymmddn8.).xlsx/i,1,%superq(xlsx_name)));
     %let _result_xlsx=&_folder.\&_result_name;
@@ -366,4 +374,10 @@ run;
 
 %cleanup:
     %_cleanup;
+
+    %put NOTE: ===== PREPARE_TRANSFER FINISHED =====;
+
+    /* Close the external log and restore the normal SAS log destination. */
+    proc printto;
+    run;
 %mend prepare_transfer;
