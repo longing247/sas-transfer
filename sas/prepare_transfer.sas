@@ -264,25 +264,17 @@ run;
             if whole_zip then transfer_path=directory_path;
             else transfer_path=cats(prxchange('s/[\\\/]+$//',1,directory_path),'\',file_name);
 
-            fileref='srcfile';
-            rc=filename(fileref,transfer_path);
-
-            if rc ne 0 then do;
-                status='ERROR';
-                message=cats('Cannot assign source file: ',sysmsg());
-            end;
-            else if not fexist(fileref) then do;
+            if not fileexist(transfer_path) then do;
                 status='ERROR';
                 message='Source file does not exist.';
             end;
             else do;
-                md5=hashing_file('MD5',fileref,4);
+                md5=hashing_file('MD5',transfer_path);
                 if missing(md5) then do;
                     status='ERROR';
                     message=cats('MD5 calculation failed: ',sysmsg());
                 end;
             end;
-            rc=filename(fileref);
         end;
 
         keep row_id directory_path file_name md5 source_type
