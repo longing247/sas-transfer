@@ -14,6 +14,11 @@
 
 %let test_failures=0;
 
+/* Start each test execution with a clean result dataset. */
+proc datasets library=work nolist;
+    delete prepare_transfer_test_results;
+quit;
+
 %macro assert(test_name=, condition=, detail=);
     %local result;
     %let result=%eval(&condition);
