@@ -62,8 +62,7 @@ run;
 
 /*
  * Scan the physical file as raw bytes for hexadecimal 1A (Ctrl-Z / DOS EOF).
- * RECFM=N on this SAS host requires LRECL >= 256, so read 256-byte blocks
- * and inspect each byte in the block.
+ * RECFM=N on this SAS host requires LRECL >= 256.
  */
 filename _rawscan "&file_path" recfm=n lrecl=256;
 
@@ -71,7 +70,7 @@ data _null_;
     length block $256 byte $1;
     retain byte_position 0 ctrl_z_count 0 first_ctrl_z .;
 
-    infile _rawscan recfm=n lrecl=256 length=n end=eof;
+    infile _rawscan recfm=n lrecl=256 length=n;
     input block $varying256. n;
 
     do j = 1 to n;
@@ -84,13 +83,14 @@ data _null_;
             putlog 'CTRL-Z (1A) found at byte ' byte_position comma20.;
         end;
     end;
+run;
 
-    if eof then do;
-        putlog '===== CTRL-Z DIAGNOSTIC =====';
-        putlog byte_position=;
-        putlog ctrl_z_count=;
-        putlog first_ctrl_z=;
-    end;
+data _null_;
+    length path $2048;
+    path="&file_path";
+    putlog '===== CTRL-Z DIAGNOSTIC =====';
+    putlog 'Raw scan completed for: ' path;
+    putlog 'Review the log above for any CTRL-Z (1A) found messages.';
 run;
 
 filename _rawscan clear;
