@@ -455,6 +455,16 @@ run;
         file_type='MD5'; file_name="&_csv_name"; file_path="&_csv_path"; output;
     run;
     libname _uplsnap clear;
+
+    /*
+     * Persist the prepared per-file result for later validation tests.
+     * This keeps the source paths, calculated MD5 values and package paths.
+     */
+    libname _testout "&_folder";
+    data _testout.prepare_transfer_result;
+        set &data;
+    run;
+    libname _testout clear;
 %mend package_transfer;
 
 
