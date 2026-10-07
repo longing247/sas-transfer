@@ -162,45 +162,42 @@ run;
 
 
 /*
- * Deterministic one-byte copy diagnostic.
+ * Independent Windows MD5 check.
  *
- * Use this after confirming the source file size independently in Windows.
- * Set source_size to that exact byte count.  POINT= makes the loop finite:
- * SAS attempts exactly source_size byte reads and cannot wait for EOF.
- *
- * The result should be checked with Get-FileHash.  This test is diagnostic
- * only; it does not change the production transfer logic.
+ * PowerShell hashes the same physical file and writes only the MD5 value
+ * to a temporary text file. SAS then reads it and compares it with
+ * HASHING_FILE(). No source file is copied or modified.
  */
-%let source_size=74266;
-%let byte_copy_path=&program_dir.\hash_test_bytecopy.csv;
+%let ps_md5_file=&program_dir.\powershell_md5.txt;
 
-filename _bytesrc "&file_path" recfm=n lrecl=256;
-filename _bytedst "&byte_copy_path" recfm=n lrecl=256;
+systask command
+    "powershell.exe -NoProfile -Command ""(Get-FileHash -LiteralPath '&file_path' -Algorithm MD5).Hash | Set-Content -LiteralPath '&ps_md5_file' -Encoding ASCII"""
+    taskname=ps_md5
+    wait
+    status=ps_rc;
 
-data _null_;
-    length byte $1;
+%put NOTE: PowerShell exit code = &ps_rc.;
 
-    do pos=1 to &source_size;
-        infile _bytesrc recfm=n lrecl=256 point=pos;
-        input byte $char1.;
-
-        file _bytedst recfm=n lrecl=256;
-        put byte $char1.;
-    end;
-
-    stop;
-run;
-
-filename _bytesrc clear;
-filename _bytedst clear;
+filename _psmd5 "&ps_md5_file";
 
 data _null_;
-    length path $2048 md5 $32;
+    length path $2048 sas_md5 ps_md5 $32;
 
-    path="&byte_copy_path";
-    md5=hashing_file('MD5',path);
+    path=symget('file_path');
+    sas_md5=hashing_file('MD5',path);
 
-    putlog '===== DETERMINISTIC BYTE COPY CHECK =====';
+    infile _psmd5 truncover;
+    input ps_md5 $32.;
+
+    putlog '===== SAS VS POWERSHELL MD5 =====';
     putlog path=;
-    putlog md5=;
+    putlog sas_md5=;
+    putlog ps_md5=;
+
+    if upcase(sas_md5)=upcase(ps_md5) then
+        putlog 'RESULT: MATCH';
+    else
+        putlog 'RESULT: MISMATCH';
 run;
+
+filename _psmd5 clear;
