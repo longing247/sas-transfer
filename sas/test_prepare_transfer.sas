@@ -133,6 +133,29 @@ libname testout "&program_dir";
     );
 
     /*
+     * Validate the conditional packaged-filename cleanup.
+     * For rows whose source path contains uniqueString, the packaged
+     * relative_path must no longer contain thingsToBeRemoved, regardless
+     * of letter case.  Rows outside that path rule are not affected.
+     */
+    proc sql noprint;
+        select count(*) into :rename_rows trimmed
+        from work._test_prepared
+        where index(upcase(directory_path),upcase('uniqueString')) > 0;
+
+        select count(*) into :bad_rename trimmed
+        from work._test_prepared
+        where index(upcase(directory_path),upcase('uniqueString')) > 0
+          and index(upcase(relative_path),upcase('thingsToBeRemoved')) > 0;
+    quit;
+
+    %assert(
+        THINGS_TO_BE_REMOVED,
+        &bad_rename = 0,
+        thingsToBeRemoved is removed case-insensitively from applicable packaged filenames
+    );
+
+    /*
      * Recalculate MD5 from each prepared transfer_path.
      * This also validates extracted ZIP members because transfer_path points
      * to the extracted binary file produced by prepare_transfer.sas.
