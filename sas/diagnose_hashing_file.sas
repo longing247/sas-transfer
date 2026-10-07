@@ -12,7 +12,7 @@
 
 data _null_;
     length path $2048 md5_default md5_flag0 $32;
-    length optname value $256;
+    length optname value $256 msg $500;
 
     path = symget('file_path');
 
@@ -30,7 +30,8 @@ data _null_;
 
     if rc ne 0 then do;
         put 'ERROR: FILENAME assignment failed.';
-        put sysmsg();
+        msg = sysmsg();
+        putlog 'ERROR: ' msg;
     end;
     else do;
         fid = fopen('diagfile', 'I', 1, 'B');
@@ -50,7 +51,8 @@ data _null_;
         end;
         else do;
             put 'ERROR: FOPEN failed.';
-            put sysmsg();
+            msg = sysmsg();
+            putlog 'ERROR: ' msg;
         end;
 
         rc = filename('diagfile');
