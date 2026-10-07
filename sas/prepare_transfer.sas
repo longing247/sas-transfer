@@ -225,13 +225,17 @@ run;
         whole_zip=(source_type='ZIP' and
                    upcase(transfer_name)=upcase(scan(directory_path,-1,'\/')));
 
-        if missing(directory_path) then do;
-            status='ERROR';
-            message='DIRECTORY_PATH is required.';
-        end;
-        else if missing(file_name) then do;
-            status='ERROR';
-            message='FILE_NAME is required.';
+        /*
+         * A partially populated manifest row is ignored with a warning.
+         * A transfer row is processed only when both column 1 and column 4
+         * are populated. Completely blank rows were already deleted above.
+         */
+        if missing(directory_path) or missing(file_name) then do;
+            status='WARNING';
+            if missing(directory_path) then
+                message='Column 1 (directory path) is missing; row will be skipped.';
+            else
+                message='Column 4 (file name) is missing; row will be skipped.';
         end;
 
         if status='OK' then do;
@@ -319,6 +323,9 @@ run;
             putlog 'ERROR: Manifest preparation failed. ' row_id= directory_path=
                    file_name= message=;
         end;
+        else if status='WARNING' then
+            putlog 'WARNING: Manifest row skipped. ' row_id= directory_path=
+                   file_name= message=;
 
         if eof then call symputx('_errors',errors,'L');
     run;
@@ -329,7 +336,7 @@ run;
     %end;
 
     data &out;
-        set work._tmp_results;
+        set work._tmp_results(where=(status='OK'));
         drop status message;
     run;
 
