@@ -14,17 +14,21 @@
 
 %let test_failures=0;
 
-%macro assert(test_name, condition, detail);
+%macro assert(test_name=, condition=, detail=);
+    %local result;
+    %let result=%eval(&condition);
+
     data work._test_one;
         length test_name $80 status $4 detail $500;
         test_name="&test_name";
-        if &condition then status='PASS';
+        detail="&detail";
+
+        if &result then status='PASS';
         else do;
             status='FAIL';
             call symputx('test_failures',
                          input(symget('test_failures'),best.)+1,'G');
         end;
-        detail="&detail";
     run;
 
     proc append base=work.prepare_transfer_test_results
@@ -41,15 +45,15 @@ libname testout "&program_dir";
 %let have_snapshot=%sysfunc(exist(testout.upload_snapshot));
 
 %assert(
-    PREPARED_DATASET_EXISTS,
-    &have_result,
-    prepare_transfer_result.sas7bdat exists
+    test_name=PREPARED_DATASET_EXISTS,
+    condition=&have_result,
+    detail=prepare_transfer_result.sas7bdat exists
 );
 
 %assert(
-    UPLOAD_SNAPSHOT_EXISTS,
-    &have_snapshot,
-    upload_snapshot.sas7bdat exists
+    test_name=UPLOAD_SNAPSHOT_EXISTS,
+    condition=&have_snapshot,
+    detail=upload_snapshot.sas7bdat exists
 );
 
 %if &have_result %then %do;
@@ -92,40 +96,40 @@ libname testout "&program_dir";
     quit;
 
     %assert(
-        PREPARED_ROWS_EXIST,
-        &row_count > 0,
-        prepared dataset contains at least one row
-    );
+    test_name=PREPARED_ROWS_EXIST,
+    condition=&row_count > 0,
+    detail=prepared dataset contains at least one row
+);
 
     %assert(
-        REQUIRED_VALUES_PRESENT,
-        &bad_required = 0,
-        source path file name transfer path relative path and MD5 are populated
-    );
+    test_name=REQUIRED_VALUES_PRESENT,
+    condition=&bad_required = 0,
+    detail=source path file name transfer path relative path and MD5 are populated
+);
 
     %assert(
-        MD5_FORMAT,
-        &bad_md5 = 0,
-        every individual MD5 contains exactly 32 hexadecimal characters
-    );
+    test_name=MD5_FORMAT,
+    condition=&bad_md5 = 0,
+    detail=every individual MD5 contains exactly 32 hexadecimal characters
+);
 
     %assert(
-        DATA_TYPE,
-        &bad_type = 0,
-        every row is RAW_CRF or RAW_EXTERNAL
-    );
+    test_name=DATA_TYPE,
+    condition=&bad_type = 0,
+    detail=every row is RAW_CRF or RAW_EXTERNAL
+);
 
     %assert(
-        RELATIVE_PATH,
-        &bad_relative = 0,
-        every package path starts with RAW_CRF/ or RAW_EXTERNAL/
-    );
+    test_name=RELATIVE_PATH,
+    condition=&bad_relative = 0,
+    detail=every package path starts with RAW_CRF/ or RAW_EXTERNAL/
+);
 
     %assert(
-        SOURCE_TYPE,
-        &bad_source = 0,
-        every source type is DIR or ZIP
-    );
+    test_name=SOURCE_TYPE,
+    condition=&bad_source = 0,
+    detail=every source type is DIR or ZIP
+);
 
     /*
      * Validate the conditional packaged-filename cleanup.
@@ -145,10 +149,10 @@ libname testout "&program_dir";
     quit;
 
     %assert(
-        THINGS_TO_BE_REMOVED,
-        &bad_rename = 0,
-        thingsToBeRemoved is removed case-insensitively from applicable packaged filenames
-    );
+    test_name=THINGS_TO_BE_REMOVED,
+    condition=&bad_rename = 0,
+    detail=thingsToBeRemoved is removed case-insensitively from applicable packaged filenames
+);
 
     /*
      * Recalculate MD5 from each prepared transfer_path.
@@ -175,10 +179,10 @@ libname testout "&program_dir";
     quit;
 
     %assert(
-        MD5_RECALCULATION,
-        &bad_recalc = 0,
-        persisted individual MD5 values match the prepared transfer files
-    );
+    test_name=MD5_RECALCULATION,
+    condition=&bad_recalc = 0,
+    detail=persisted individual MD5 values match the prepared transfer files
+);
 
 %end;
 
@@ -209,22 +213,22 @@ libname testout "&program_dir";
     quit;
 
     %assert(
-        SNAPSHOT_TWO_ROWS,
-        &snapshot_rows = 2,
-        upload snapshot contains exactly package ZIP and MD5 CSV
-    );
+    test_name=SNAPSHOT_TWO_ROWS,
+    condition=&snapshot_rows = 2,
+    detail=upload snapshot contains exactly package ZIP and MD5 CSV
+);
 
     %assert(
-        SNAPSHOT_FILE_TYPES,
-        &package_rows = 1 and &md5_rows = 1,
-        upload snapshot contains one PACKAGE row and one MD5 row
-    );
+    test_name=SNAPSHOT_FILE_TYPES,
+    condition=&package_rows = 1 and &md5_rows = 1,
+    detail=upload snapshot contains one PACKAGE row and one MD5 row
+);
 
     %assert(
-        SNAPSHOT_PATHS,
-        &missing_upload = 0,
-        both upload rows have file names and paths
-    );
+    test_name=SNAPSHOT_PATHS,
+    condition=&missing_upload = 0,
+    detail=both upload rows have file names and paths
+);
 
     data work._test_snapshot_files;
         set work._test_snapshot;
@@ -242,10 +246,10 @@ libname testout "&program_dir";
     quit;
 
     %assert(
-        UPLOAD_FILES_EXIST,
-        &missing_physical = 0,
-        package ZIP and MD5 CSV physically exist
-    );
+    test_name=UPLOAD_FILES_EXIST,
+    condition=&missing_physical = 0,
+    detail=package ZIP and MD5 CSV physically exist
+);
 
 %end;
 
