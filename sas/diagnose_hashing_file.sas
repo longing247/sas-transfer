@@ -8,7 +8,8 @@
  * It does not modify the source file.
  */
 
-%let file_path=P:\path\to\failing.csv;
+%let file_name=PET03_SiteList_20260921.csv;
+%let file_path=&program_dir.\&file_name;
 
 data _null_;
     length path $2048 md5_default md5_flag0 $32;
