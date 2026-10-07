@@ -14,11 +14,6 @@
 
 %let test_failures=0;
 
-data work.prepare_transfer_test_results;
-    length test_name $80 status $4 detail $500;
-    stop;
-run;
-
 %macro assert(test_name, condition, detail);
     data work._test_one;
         length test_name $80 status $4 detail $500;
