@@ -160,3 +160,47 @@ data _null_;
     putlog md5_copy=;
 run;
 
+
+/*
+ * Deterministic one-byte copy diagnostic.
+ *
+ * Use this after confirming the source file size independently in Windows.
+ * Set source_size to that exact byte count.  POINT= makes the loop finite:
+ * SAS attempts exactly source_size byte reads and cannot wait for EOF.
+ *
+ * The result should be checked with Get-FileHash.  This test is diagnostic
+ * only; it does not change the production transfer logic.
+ */
+%let source_size=74266;
+%let byte_copy_path=&program_dir.\hash_test_bytecopy.csv;
+
+filename _bytesrc "&file_path" recfm=n lrecl=256;
+filename _bytedst "&byte_copy_path" recfm=n lrecl=256;
+
+data _null_;
+    length byte $1;
+
+    do pos=1 to &source_size;
+        infile _bytesrc recfm=n lrecl=256 point=pos;
+        input byte $char1.;
+
+        file _bytedst recfm=n lrecl=256;
+        put byte $char1.;
+    end;
+
+    stop;
+run;
+
+filename _bytesrc clear;
+filename _bytedst clear;
+
+data _null_;
+    length path $2048 md5 $32;
+
+    path="&byte_copy_path";
+    md5=hashing_file('MD5',path);
+
+    putlog '===== DETERMINISTIC BYTE COPY CHECK =====';
+    putlog path=;
+    putlog md5=;
+run;
