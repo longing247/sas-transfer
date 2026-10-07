@@ -459,8 +459,7 @@ run;
 
 
 /* Run preparation and packaging as one transfer preparation program. */
-%let _log_stamp=%sysfunc(today(),yymmddn8.);
-proc printto log="&program_dir.\prepare_transfer_&_log_stamp..log" new;
+proc printto log="&program_dir.\prepare_transfer.log" new;
 run;
 
 %put NOTE: ===== PREPARE TRANSFER STARTED =====;
