@@ -15,9 +15,11 @@
 %let test_failures=0;
 
 /* Start each test execution with a clean result dataset. */
-proc datasets library=work nolist;
-    delete prepare_transfer_test_results;
-quit;
+%if %sysfunc(exist(work.prepare_transfer_test_results)) %then %do;
+    proc datasets library=work nolist;
+        delete prepare_transfer_test_results;
+    quit;
+%end;
 
 %macro assert(test_name=, condition=, detail=);
     %local result;
@@ -160,34 +162,27 @@ libname testout "&program_dir";
 );
 
     /*
-     * Recalculate MD5 from each prepared transfer_path.
-     * This also validates extracted ZIP members because transfer_path points
-     * to the extracted binary file produced by prepare_transfer.sas.
+     * Export the essential MD5 verification fields for an independent
+     * PowerShell Get-FileHash check.
      */
-    data work._test_md5;
-        set work._test_prepared;
-        length test_md5 $32 ref $8;
-        ref='tmd5';
-        rc=filename(ref,transfer_path,'DISK','recfm=n lrecl=1048576');
-
-        if rc=0 and fexist(ref) then
-            test_md5=hashing_file('MD5',ref,4);
-
-        rc=filename(ref);
-        md5_match=(upcase(md5)=upcase(test_md5) and not missing(test_md5));
+    proc export data=work._test_prepared(
+            keep=directory_path file_name md5 transfer_path)
+        outfile="&program_dir.\md5_verify.csv"
+        dbms=csv
+        replace;
     run;
 
-    proc sql noprint;
-        select count(*) into :bad_recalc trimmed
-        from work._test_md5
-        where md5_match ne 1;
-    quit;
+    systask command
+        "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ""&program_dir.\verify_md5.ps1"" -InputFile ""&program_dir.\md5_verify.csv"""
+        taskname=verify_md5
+        wait
+        status=ps_rc;
 
     %assert(
-    test_name=MD5_RECALCULATION,
-    condition=&bad_recalc = 0,
-    detail=persisted individual MD5 values match the prepared transfer files
-);
+        test_name=POWERSHELL_MD5_VERIFICATION,
+        condition=&ps_rc = 0,
+        detail=PowerShell Get-FileHash independently confirms SAS MD5 values
+    );
 
 %end;
 
