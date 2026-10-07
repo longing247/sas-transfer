@@ -59,3 +59,35 @@ data _null_;
         rc = filename('diagfile');
     end;
 run;
+
+/*
+ * Scan the physical file as raw bytes for hexadecimal 1A (Ctrl-Z / DOS EOF).
+ * This helps determine whether HASHING_FILE() may be stopping at a byte that
+ * Windows byte-level hashing tools treat as ordinary file content.
+ */
+filename _rawscan "&file_path" recfm=n lrecl=1;
+
+data _null_;
+    length byte $1;
+    retain byte_position 0 ctrl_z_count 0 first_ctrl_z .;
+
+    infile _rawscan recfm=n lrecl=1 end=eof;
+    input byte $char1.;
+    byte_position + 1;
+
+    if rank(byte)=26 then do;
+        ctrl_z_count + 1;
+        if missing(first_ctrl_z) then first_ctrl_z=byte_position;
+        putlog 'CTRL-Z (1A) found at byte ' byte_position comma20.;
+    end;
+
+    if eof then do;
+        putlog '===== CTRL-Z DIAGNOSTIC =====';
+        putlog byte_position=;
+        putlog ctrl_z_count=;
+        putlog first_ctrl_z=;
+    end;
+run;
+
+filename _rawscan clear;
+
