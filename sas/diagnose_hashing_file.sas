@@ -94,3 +94,69 @@ data _null_;
 run;
 
 filename _rawscan clear;
+
+/*
+ * Create a raw byte-for-byte copy in the program directory and profile
+ * control/high bytes while copying.  The copy can then be checked with
+ * HASHING_FILE() and independently with Get-FileHash.
+ */
+%let copy_path=&program_dir.\hash_test_copy.csv;
+
+filename _rawsrc "&file_path" recfm=n lrecl=256;
+filename _rawdst "&copy_path" recfm=n lrecl=256;
+
+data _null_;
+    length block $256 byte prev $1;
+    retain total_bytes 0 cr_count 0 lf_count 0 crlf_count 0
+           nul_count 0 high_byte_count 0 prev '';
+
+    infile _rawsrc recfm=n lrecl=256 length=n end=eof;
+    file _rawdst recfm=n lrecl=256;
+
+    input block $varying256. n;
+    put block $varying256. n;
+
+    do j=1 to n;
+        byte=substr(block,j,1);
+        total_bytes+1;
+
+        if rank(byte)=13 then cr_count+1;
+        if rank(byte)=10 then lf_count+1;
+        if prev='0D'x and byte='0A'x then crlf_count+1;
+        if rank(byte)=0 then nul_count+1;
+        if rank(byte)>=128 then high_byte_count+1;
+
+        prev=byte;
+    end;
+
+    if eof then do;
+        putlog '===== RAW BYTE PROFILE =====';
+        putlog total_bytes=;
+        putlog cr_count=;
+        putlog lf_count=;
+        putlog crlf_count=;
+        putlog nul_count=;
+        putlog high_byte_count=;
+    end;
+run;
+
+filename _rawsrc clear;
+filename _rawdst clear;
+
+data _null_;
+    length original copy $2048;
+    length md5_original md5_copy $32;
+
+    original="&file_path";
+    copy="&copy_path";
+
+    md5_original=hashing_file('MD5',original);
+    md5_copy=hashing_file('MD5',copy);
+
+    putlog '===== RAW COPY HASHING_FILE CHECK =====';
+    putlog original=;
+    putlog md5_original=;
+    putlog copy=;
+    putlog md5_copy=;
+run;
+
