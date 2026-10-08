@@ -43,118 +43,6 @@ run;
     quit;
 %mend _resolve__excel_columns;
 
-%macro _process_zip_member(row_id=);
-    %local _zip_path;
-
-    proc sql noprint;
-        select directory_path
-          into :_zip_path trimmed
-          from work._tmp_results
-         where row_id=&row_id;
-    quit;
-
-    filename inzip ZIP "%superq(_zip_path)";
-
-    data work._tmp_zip_result_&row_id;
-        set work._tmp_results(where=(row_id=&row_id));
-
-        length member $2048 member_file $1024
-               first_member $2048 member_md5 $32 first_md5 $32
-               mem_ref $8 extract_ref $8;
-
-        status='OK';
-        message='';
-        match_count=0;
-        first_md5='';
-        first_member='';
-
-        did=dopen('inzip');
-        putlog 'ZIP_DID=' did;
-
-        if did=0 then do;
-            status='ERROR';
-            message=cats('Cannot read ZIP: ',sysmsg());
-        end;
-        else do i=1 to dnum(did) while(status='OK');
-            member=dread(did,i);
-            putlog 'ZIP_MEMBER=' member;
-
-            if substr(member,lengthn(member),1) ne '/' then do;
-                member_file=scan(member,-1,'/');
-
-                if upcase(member_file)=upcase(transfer_name) then do;
-                    match_count+1;
-                    mem_ref=cats('zm',put(i,z5.));
-                    rc2=filename(mem_ref,"%superq(_zip_path)",'ZIP',
-                                 cats('member=',quote(strip(member)),
-                                      ' recfm=n lrecl=1048576'));
-
-                    if rc2 ne 0 then do;
-                        status='ERROR';
-                        message=cats('Cannot access ZIP member: ',sysmsg());
-                    end;
-                    else do;
-                        member_md5=hashing_file('MD5',mem_ref,4);
-
-                        if missing(member_md5) then do;
-                            status='ERROR';
-                            message=cats('ZIP member MD5 calculation failed: ',sysmsg());
-                        end;
-                        else if match_count=1 then do;
-                            first_md5=member_md5;
-                            first_member=member;
-                        end;
-                        else if member_md5 ne first_md5 then do;
-                            status='ERROR';
-                            message='Duplicate ZIP members have different MD5 values.';
-                        end;
-                    end;
-                    rc2=filename(mem_ref);
-                end;
-            end;
-        end;
-
-        if did>0 then rc2=dclose(did);
-
-        if status='OK' and match_count=0 then do;
-            status='ERROR';
-            message='Requested file not found in ZIP.';
-        end;
-
-        if status='OK' then do;
-            md5=first_md5;
-            transfer_path=cats(pathname('work'),'\_extract_',row_id,'_',transfer_name);
-
-            extract_ref='zinmem';
-            rc1=filename(
-                extract_ref,
-                "%superq(_zip_path)",
-                'ZIP',
-                cats('member=',quote(strip(first_member)),
-                     ' recfm=n lrecl=1048576')
-            );
-            rc2=filename('xout',transfer_path,'DISK','recfm=n lrecl=1048576');
-
-            if rc1 ne 0 or rc2 ne 0 then do;
-                status='ERROR';
-                message=cats('Cannot prepare extraction: ',sysmsg());
-            end;
-            else if fcopy(extract_ref,'xout') ne 0 then do;
-                status='ERROR';
-                message=cats('Extraction failed: ',sysmsg());
-            end;
-
-            rc1=filename(extract_ref);
-            rc2=filename('xout');
-        end;
-
-        keep row_id directory_path file_name md5 source_type
-             transfer_path transfer_name data_type relative_path status message;
-    run;
-
-    filename inzip clear;
-%mend _process_zip_member;
-
 %macro prepare_transfer(
     sheet=Sheet1,
     out=work.md5_result,
@@ -164,7 +52,7 @@ run;
 );
     %local _dircol _filecol _md5col _errors
            _zip_rows _zip_n _z _zip_row _select_list
-           _xlsx _result_xlsx _result_name _folder xlsx_name;
+           _xlsx _result_xlsx _result_name _folder xlsx_name _md5_ps_rc;
 
     %let _errors=0;
     %let xlsx_name=template.xlsx;
@@ -259,6 +147,7 @@ run;
 
         if status='OK' and source_type='ZIP' and not whole_zip then do;
             status='ZIP';
+            transfer_path=cats(pathname('work'),'\\_extract_',row_id,'_',transfer_name);
         end;
         else if status='OK' then do;
             if whole_zip then transfer_path=directory_path;
@@ -268,43 +157,48 @@ run;
                 status='ERROR';
                 message='Source file does not exist.';
             end;
-            else do;
-                md5=hashing_file('MD5',transfer_path);
-                if missing(md5) then do;
-                    status='ERROR';
-                    message=cats('MD5 calculation failed: ',sysmsg());
-                end;
-            end;
+            /* MD5 is calculated by PowerShell after the manifest is exported. */
         end;
 
         keep row_id directory_path file_name md5 source_type
-             transfer_path transfer_name data_type relative_path status message;
+             transfer_path transfer_name data_type relative_path status message whole_zip;
     run;
 
-    proc sql noprint;
-        select row_id
-          into :_zip_rows separated by ' '
-          from work._tmp_results
-         where status='ZIP';
-    quit;
+    /* PowerShell computes all MD5 values, including extracted ZIP members. */
+    proc export data=work._tmp_results(where=(status in ('OK','ZIP'))
+         keep=row_id directory_path transfer_name transfer_path source_type whole_zip)
+         outfile="&_folder.\\_tmp_md5_input.csv" dbms=csv replace;
+    run;
 
-    %let _zip_n=%sysfunc(countw(%superq(_zip_rows),%str( )));
+    systask command
+      "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ""&_folder.\\calculate_transfer_md5.ps1"" -InputCsv ""&_folder.\\_tmp_md5_input.csv"" -OutputCsv ""&_folder.\\_tmp_md5_output.csv"""
+      taskname=calculate_md5 wait status=_md5_ps_rc;
 
-    %if &_zip_n>0 %then %do;
-        %do _z=1 %to &_zip_n;
-            %let _zip_row=%scan(%superq(_zip_rows),&_z,%str( ));
-            %_process_zip_member(row_id=&_zip_row);
-        %end;
-
-        data work._tmp_results;
-            set work._tmp_results(where=(status ne 'ZIP'))
-                work._tmp_zip_result_:;
-        run;
-
-        proc sort data=work._tmp_results;
-            by row_id;
-        run;
+    %if &_md5_ps_rc ne 0 %then %do;
+        %put ERROR: PowerShell MD5 calculation failed (exit code &_md5_ps_rc).;
+        %goto cleanup;
     %end;
+
+    proc import datafile="&_folder.\\_tmp_md5_output.csv"
+        out=work._tmp_ps_md5 dbms=csv replace;
+        guessingrows=max;
+    run;
+
+    proc sort data=work._tmp_results; by row_id; run;
+    proc sort data=work._tmp_ps_md5; by row_id; run;
+
+    data work._tmp_results;
+        merge work._tmp_results(in=original)
+              work._tmp_ps_md5(rename=(md5=_ps_md5 status=_ps_status message=_ps_message));
+        by row_id;
+        if original;
+        if status in ('OK','ZIP') then do;
+            md5=_ps_md5;
+            status=_ps_status;
+            message=_ps_message;
+        end;
+        drop _ps_md5 _ps_status _ps_message;
+    run;
 
     data _null_;
         set work._tmp_results end=eof;
@@ -373,7 +267,7 @@ run;
 /* Package the prepared files and create the persistent upload snapshot. */
 %macro package_transfer(data=work.md5_result);
     %local _folder_name _date _study_id _tag_id
-           _zip_name _csv_name _zip_path _csv_path _zip_md5 _errors _folder;
+           _zip_name _csv_name _zip_path _csv_path _zip_md5 _errors _folder _pkg_ps_rc;
 
     %let _folder=&program_dir;
     %let _folder_name=%sysfunc(scan(%superq(_folder),-1,%str(\/)));
@@ -428,13 +322,23 @@ run;
         %return;
     %end;
 
-    filename _pkgmd5 "&_zip_path";
+    %let _zip_md5=;
+    systask command
+      "powershell.exe -NoProfile -Command ""(Get-FileHash -LiteralPath '&_zip_path' -Algorithm MD5).Hash | Set-Content -LiteralPath '&_folder.\\_tmp_package_md5.txt' -Encoding ASCII"""
+      taskname=package_md5 wait status=_pkg_ps_rc;
+
+    %if &_pkg_ps_rc ne 0 %then %do;
+        %put ERROR: PowerShell package MD5 calculation failed.;
+        %return;
+    %end;
+
     data _null_;
-        length zip_md5 $32;
-        zip_md5=hashing_file('MD5','_pkgmd5',4);
-        call symputx('_zip_md5',zip_md5,'L');
+        infile "&_folder.\\_tmp_package_md5.txt" truncover;
+        length value $32;
+        input value $32.;
+        if prxmatch('/^[0-9A-F]{32}$/i',strip(value)) then
+            call symputx('_zip_md5',value,'L');
     run;
-    filename _pkgmd5 clear;
 
     %if not %length(%superq(_zip_md5)) %then %do;
         %put ERROR: Cannot calculate MD5 for &_zip_path.;
