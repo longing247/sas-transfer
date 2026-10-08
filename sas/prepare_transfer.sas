@@ -44,7 +44,7 @@ run;
 %mend _resolve__excel_columns;
 
 %macro _process_zip_member(row_id=);
-    %local _zip_path _dup_n _dup_i _dup_path _dup_rc _dup_md5 _first_hash;
+    %local _zip_path;
 
     proc sql noprint;
         select directory_path
@@ -59,13 +59,11 @@ run;
         set work._tmp_results(where=(row_id=&row_id));
 
         length member $2048 member_file $1024
-               first_member $2048 member_md5 $32 first_md5 $32
-               mem_ref $8 extract_ref $8;
+               first_member $2048 extract_ref $8;
 
         status='OK';
         message='';
         match_count=0;
-        first_md5='';
         first_member='';
 
         did=dopen('inzip');
@@ -93,7 +91,7 @@ run;
 
         if status='OK' and match_count>1 then do;
             status='ERROR';
-            message='Multiple ZIP members match; duplicate MD5 verification is not yet implemented.';
+            message='Duplicate ZIP members match the requested filename.';
         end;
 
         if status='OK' and match_count=0 then do;
@@ -128,7 +126,7 @@ run;
         end;
 
         keep row_id directory_path file_name md5 source_type
-             transfer_path transfer_name data_type relative_path status message match_count;
+             transfer_path transfer_name data_type relative_path status message;
     run;
 
     filename inzip clear;
@@ -146,6 +144,7 @@ run;
            _xlsx _result_xlsx _result_name _folder xlsx_name _hash_rows _hash_n _h _hash_row _hash_path _hash_rc;
 
     %let _errors=0;
+    %let _hash_path=;
     %let _hash_rows=;
     %let _zip_rows=;
     %let xlsx_name=template.xlsx;
@@ -293,7 +292,7 @@ run;
 
         data _null_;
             set work._tmp_results(where=(row_id=&_hash_row));
-            call symputx('_hash_path',transfer_path,'L');
+            call symputx('_hash_path',tranwrd(strip(transfer_path),"'","''"),'L');
         run;
 
         /* Remove stale output before invoking PowerShell. */
@@ -309,7 +308,7 @@ run;
           taskname=md5_calc wait status=_hash_rc;
 
         data work._tmp_hash_one;
-            length md5 $32 hash_status $8 hash_message $500;
+            length calculated_md5 $32 hash_status $8 hash_message $500;
             row_id=&_hash_row;
             hash_status='OK';
             hash_message='';
@@ -319,8 +318,8 @@ run;
             %end;
             %else %do;
                 infile "&_folder.\\_tmp_md5_value.txt" truncover;
-                input md5 $32.;
-                if not prxmatch('/^[0-9A-F]{32}$/i',strip(md5)) then do;
+                input calculated_md5 $32.;
+                if not prxmatch('/^[0-9A-F]{32}$/i',strip(calculated_md5)) then do;
                     hash_status='ERROR';
                     hash_message='Invalid PowerShell MD5 result.';
                 end;
@@ -347,14 +346,21 @@ run;
         proc sort data=work._tmp_hash_results; by row_id; run;
         data work._tmp_results;
             merge work._tmp_results(in=original)
-                  work._tmp_hash_results;
+                  work._tmp_hash_results(in=hashed);
             by row_id;
             if original;
             if status='OK' then do;
-                status=hash_status;
-                message=hash_message;
+                if not hashed then do;
+                    status='ERROR';
+                    message='No MD5 result returned for manifest row.';
+                end;
+                else do;
+                    md5=calculated_md5;
+                    status=hash_status;
+                    message=hash_message;
+                end;
             end;
-            drop hash_status hash_message;
+            drop calculated_md5 hash_status hash_message;
         run;
     %end;
 
@@ -425,7 +431,7 @@ run;
 /* Package the prepared files and create the persistent upload snapshot. */
 %macro package_transfer(data=work.md5_result);
     %local _folder_name _date _study_id _tag_id
-           _zip_name _csv_name _zip_path _csv_path _zip_md5 _errors _folder _pkg_ps_rc;
+           _zip_name _csv_name _zip_path _csv_path _zip_md5 _errors _folder _pkg_ps_rc _zip_ps_path;
 
     %if not %sysfunc(exist(&data)) %then %do;
         %put ERROR: Prepared transfer dataset &data does not exist; packaging skipped.;
@@ -448,6 +454,7 @@ run;
     %let _zip_path=&_folder.\&_zip_name;
     %let _csv_path=&_folder.\&_csv_name;
     %let _errors=0;
+    %let _pkg_ps_rc=1;
 
     filename _pkgzip "&_zip_path" recfm=n;
     data _null_;
@@ -486,6 +493,9 @@ run;
     %end;
 
     %let _zip_md5=;
+    data _null_;
+        call symputx('_zip_ps_path',tranwrd("&_zip_path","'","''"),'L');
+    run;
     filename _pmd5 "&_folder.\\_tmp_package_md5.txt";
     data _null_;
         if fexist('_pmd5') then rc=fdelete('_pmd5');
@@ -493,7 +503,7 @@ run;
     filename _pmd5 clear;
     %let _pkg_ps_rc=1;
     systask command
-      "powershell.exe -NoProfile -Command ""try { $h=(Get-FileHash -LiteralPath '&_zip_path' -Algorithm MD5 -ErrorAction Stop).Hash; Set-Content -LiteralPath '&_folder.\\_tmp_package_md5.txt' -Value $h -Encoding ASCII -ErrorAction Stop; exit 0 } catch { exit 1 }"""
+      "powershell.exe -NoProfile -Command ""try { $h=(Get-FileHash -LiteralPath '&_zip_ps_path' -Algorithm MD5 -ErrorAction Stop).Hash; Set-Content -LiteralPath '&_folder.\\_tmp_package_md5.txt' -Value $h -Encoding ASCII -ErrorAction Stop; exit 0 } catch { exit 1 }"""
       taskname=package_md5 wait status=_pkg_ps_rc;
 
     %if &_pkg_ps_rc ne 0 %then %do;
