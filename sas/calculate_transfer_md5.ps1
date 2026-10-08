@@ -4,7 +4,9 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.IO.Compression.FileSystem
 $results = @()
+if (-not (Test-Path -LiteralPath $InputCsv)) { throw 'Input manifest CSV is missing.' }
 foreach ($row in (Import-Csv -LiteralPath $InputCsv)) {
     $status = 'OK'; $message = ''; $hash = ''
     try {
