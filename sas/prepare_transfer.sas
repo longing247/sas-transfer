@@ -269,6 +269,11 @@ run;
     %local _folder_name _date _study_id _tag_id
            _zip_name _csv_name _zip_path _csv_path _zip_md5 _errors _folder _pkg_ps_rc;
 
+    %if not %sysfunc(exist(&data)) %then %do;
+        %put ERROR: Prepared transfer dataset &data does not exist; packaging skipped.;
+        %return;
+    %end;
+
     %let _folder=&program_dir;
     %let _folder_name=%sysfunc(scan(%superq(_folder),-1,%str(\/)));
     %let _date=%scan(%superq(_folder_name),1,_);
