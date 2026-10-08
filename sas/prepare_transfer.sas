@@ -91,6 +91,11 @@ run;
 
         if did>0 then rc2=dclose(did);
 
+        if status='OK' and match_count>1 then do;
+            status='ERROR';
+            message='Multiple ZIP members match; duplicate validation is required.';
+        end;
+
         if status='OK' and match_count=0 then do;
             status='ERROR';
             message='Requested file not found in ZIP.';
