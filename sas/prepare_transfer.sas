@@ -44,7 +44,7 @@ run;
 %mend _resolve__excel_columns;
 
 %macro _process_zip_member(row_id=);
-    %local _zip_path;
+    %local _zip_path _dup_n _dup_i _dup_path _dup_rc _dup_md5 _first_hash;
 
     proc sql noprint;
         select directory_path
@@ -91,11 +91,6 @@ run;
 
         if did>0 then rc2=dclose(did);
 
-        if status='OK' and match_count>1 then do;
-            status='ERROR';
-            message='Multiple ZIP members match; duplicate validation is required.';
-        end;
-
         if status='OK' and match_count=0 then do;
             status='ERROR';
             message='Requested file not found in ZIP.';
@@ -128,7 +123,7 @@ run;
         end;
 
         keep row_id directory_path file_name md5 source_type
-             transfer_path transfer_name data_type relative_path status message;
+             transfer_path transfer_name data_type relative_path status message match_count;
     run;
 
     filename inzip clear;
@@ -146,6 +141,8 @@ run;
            _xlsx _result_xlsx _result_name _folder xlsx_name _hash_rows _hash_n _h _hash_row _hash_path _hash_rc;
 
     %let _errors=0;
+    %let _hash_rows=;
+    %let _zip_rows=;
     %let xlsx_name=template.xlsx;
 
     %let _folder=&program_dir;
@@ -294,9 +291,16 @@ run;
             call symputx('_hash_path',transfer_path,'L');
         run;
 
+        /* Remove stale output before invoking PowerShell. */
+        filename _hmd5 "&_folder.\\_tmp_md5_value.txt";
+        data _null_;
+            if fexist('_hmd5') then rc=fdelete('_hmd5');
+        run;
+        filename _hmd5 clear;
+
         %let _hash_rc=1;
         systask command
-          "powershell.exe -NoProfile -Command ""try { (Get-FileHash -LiteralPath '&_hash_path' -Algorithm MD5).Hash | Set-Content -LiteralPath '&_folder.\\_tmp_md5_value.txt' -Encoding ASCII; exit 0 } catch { exit 1 }"""
+          "powershell.exe -NoProfile -NonInteractive -Command ""try { $p='&_hash_path'; $h=(Get-FileHash -LiteralPath $p -Algorithm MD5 -ErrorAction Stop).Hash; Set-Content -LiteralPath '&_folder.\\_tmp_md5_value.txt' -Value $h -Encoding ASCII -ErrorAction Stop; exit 0 } catch { exit 1 }"""
           taskname=md5_calc wait status=_hash_rc;
 
         data work._tmp_hash_one;
@@ -326,6 +330,11 @@ run;
         %else %do;
             proc append base=work._tmp_hash_results data=work._tmp_hash_one force; run;
         %end;
+    %end;
+
+    %if &_hash_n=0 %then %do;
+        %put ERROR: No valid transfer files found in manifest.;
+        %goto cleanup;
     %end;
 
     %if &_hash_n>0 %then %do;
@@ -472,8 +481,14 @@ run;
     %end;
 
     %let _zip_md5=;
+    filename _pmd5 "&_folder.\\_tmp_package_md5.txt";
+    data _null_;
+        if fexist('_pmd5') then rc=fdelete('_pmd5');
+    run;
+    filename _pmd5 clear;
+    %let _pkg_ps_rc=1;
     systask command
-      "powershell.exe -NoProfile -Command ""(Get-FileHash -LiteralPath '&_zip_path' -Algorithm MD5).Hash | Set-Content -LiteralPath '&_folder.\\_tmp_package_md5.txt' -Encoding ASCII"""
+      "powershell.exe -NoProfile -Command ""try { $h=(Get-FileHash -LiteralPath '&_zip_path' -Algorithm MD5 -ErrorAction Stop).Hash; Set-Content -LiteralPath '&_folder.\\_tmp_package_md5.txt' -Value $h -Encoding ASCII -ErrorAction Stop; exit 0 } catch { exit 1 }"""
       taskname=package_md5 wait status=_pkg_ps_rc;
 
     %if &_pkg_ps_rc ne 0 %then %do;
