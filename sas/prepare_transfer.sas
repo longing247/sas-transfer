@@ -138,7 +138,7 @@ run;
 );
     %local _dircol _filecol _md5col _errors
            _zip_rows _zip_n _z _zip_row _select_list
-           _xlsx _result_xlsx _result_name _folder xlsx_name _md5_ps_rc;
+           _xlsx _result_xlsx _result_name _folder xlsx_name _hash_rows _hash_n _h _hash_row _hash_path _hash_rc;
 
     %let _errors=0;
     %let xlsx_name=template.xlsx;
@@ -274,41 +274,70 @@ run;
         run;
     %end;
 
-    /* PowerShell computes all MD5 values, including extracted ZIP members. */
-    proc export data=work._tmp_results(where=(status='OK')
-         keep=row_id directory_path transfer_name transfer_path source_type whole_zip)
-         outfile="&_folder.\\_tmp_md5_input.csv" dbms=csv replace;
-    run;
+    /* Direct Get-FileHash invocation for each prepared physical file. */
+    proc sql noprint;
+        select row_id into :_hash_rows separated by ' '
+        from work._tmp_results where status='OK';
+    quit;
 
-    systask command
-      "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ""&_folder.\\calculate_transfer_md5.ps1"" -InputCsv ""&_folder.\\_tmp_md5_input.csv"" -OutputCsv ""&_folder.\\_tmp_md5_output.csv"""
-      taskname=calculate_md5 wait status=_md5_ps_rc;
+    %let _hash_n=%sysfunc(countw(%superq(_hash_rows),%str( )));
+    %do _h=1 %to &_hash_n;
+        %let _hash_row=%scan(%superq(_hash_rows),&_h,%str( ));
 
-    %if &_md5_ps_rc ne 0 %then %do;
-        %put ERROR: PowerShell MD5 calculation failed (exit code &_md5_ps_rc).;
-        %goto cleanup;
+        data _null_;
+            set work._tmp_results(where=(row_id=&_hash_row));
+            call symputx('_hash_path',transfer_path,'L');
+        run;
+
+        %let _hash_rc=1;
+        systask command
+          "powershell.exe -NoProfile -Command ""try { (Get-FileHash -LiteralPath '&_hash_path' -Algorithm MD5).Hash | Set-Content -LiteralPath '&_folder.\\_tmp_md5_value.txt' -Encoding ASCII; exit 0 } catch { exit 1 }"""
+          taskname=md5_calc wait status=_hash_rc;
+
+        data work._tmp_hash_one;
+            length md5 $32 hash_status $8 hash_message $500;
+            row_id=&_hash_row;
+            hash_status='OK';
+            hash_message='';
+            %if &_hash_rc ne 0 %then %do;
+                hash_status='ERROR';
+                hash_message='PowerShell Get-FileHash failed.';
+            %end;
+            %else %do;
+                infile "&_folder.\\_tmp_md5_value.txt" truncover;
+                input md5 $32.;
+                if not prxmatch('/^[0-9A-F]{32}$/i',strip(md5)) then do;
+                    hash_status='ERROR';
+                    hash_message='Invalid PowerShell MD5 result.';
+                end;
+            %end;
+        run;
+
+        %if &_h=1 %then %do;
+            data work._tmp_hash_results;
+                set work._tmp_hash_one;
+            run;
+        %end;
+        %else %do;
+            proc append base=work._tmp_hash_results data=work._tmp_hash_one force; run;
+        %end;
     %end;
 
-    proc import datafile="&_folder.\\_tmp_md5_output.csv"
-        out=work._tmp_ps_md5 dbms=csv replace;
-        guessingrows=max;
-    run;
-
-    proc sort data=work._tmp_results; by row_id; run;
-    proc sort data=work._tmp_ps_md5; by row_id; run;
-
-    data work._tmp_results;
-        merge work._tmp_results(in=original)
-              work._tmp_ps_md5(rename=(md5=_ps_md5 status=_ps_status message=_ps_message));
-        by row_id;
-        if original;
-        if status in ('OK','ZIP') then do;
-            md5=_ps_md5;
-            status=_ps_status;
-            message=_ps_message;
-        end;
-        drop _ps_md5 _ps_status _ps_message;
-    run;
+    %if &_hash_n>0 %then %do;
+        proc sort data=work._tmp_results; by row_id; run;
+        proc sort data=work._tmp_hash_results; by row_id; run;
+        data work._tmp_results;
+            merge work._tmp_results(in=original)
+                  work._tmp_hash_results;
+            by row_id;
+            if original;
+            if status='OK' then do;
+                status=hash_status;
+                message=hash_message;
+            end;
+            drop hash_status hash_message;
+        run;
+    %end;
 
     data _null_;
         set work._tmp_results end=eof;
