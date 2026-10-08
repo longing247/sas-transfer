@@ -1,7 +1,7 @@
 /*
  * prepare_transfer.sas
  *
- * Excel -> validate each row -> MD5 -> inferred ZIP extraction
+ * Excel -> validate each row -> inferred ZIP extraction -> certutil MD5
  *       -> transfer dataset -> result workbook.
  *
  * The input workbook is read from the current SAS working directory
@@ -59,13 +59,11 @@ run;
         set work._tmp_results(where=(row_id=&row_id));
 
         length member $2048 member_file $1024
-               first_member $2048 member_md5 $32 first_md5 $32
-               mem_ref $8 extract_ref $8;
+               first_member $2048 extract_ref $8;
 
         status='OK';
         message='';
         match_count=0;
-        first_md5='';
         first_member='';
 
         did=dopen('inzip');
@@ -84,37 +82,17 @@ run;
 
                 if upcase(member_file)=upcase(transfer_name) then do;
                     match_count+1;
-                    mem_ref=cats('zm',put(i,z5.));
-                    rc2=filename(mem_ref,"%superq(_zip_path)",'ZIP',
-                                 cats('member=',quote(strip(member)),
-                                      ' recfm=n lrecl=1048576'));
-
-                    if rc2 ne 0 then do;
-                        status='ERROR';
-                        message=cats('Cannot access ZIP member: ',sysmsg());
-                    end;
-                    else do;
-                        member_md5=hashing_file('MD5',mem_ref,4);
-
-                        if missing(member_md5) then do;
-                            status='ERROR';
-                            message=cats('ZIP member MD5 calculation failed: ',sysmsg());
-                        end;
-                        else if match_count=1 then do;
-                            first_md5=member_md5;
-                            first_member=member;
-                        end;
-                        else if member_md5 ne first_md5 then do;
-                            status='ERROR';
-                            message='Duplicate ZIP members have different MD5 values.';
-                        end;
-                    end;
-                    rc2=filename(mem_ref);
+                    if match_count=1 then first_member=member;
                 end;
             end;
         end;
 
         if did>0 then rc2=dclose(did);
+
+        if status='OK' and match_count>1 then do;
+            status='ERROR';
+            message='Duplicate ZIP members match the requested filename.';
+        end;
 
         if status='OK' and match_count=0 then do;
             status='ERROR';
@@ -122,7 +100,6 @@ run;
         end;
 
         if status='OK' then do;
-            md5=first_md5;
             transfer_path=cats(pathname('work'),'\_extract_',row_id,'_',transfer_name);
 
             extract_ref='zinmem';
@@ -164,9 +141,12 @@ run;
 );
     %local _dircol _filecol _md5col _errors
            _zip_rows _zip_n _z _zip_row _select_list
-           _xlsx _result_xlsx _result_name _folder xlsx_name;
+           _xlsx _result_xlsx _result_name _folder xlsx_name _hash_rows _hash_n _h _hash_row _hash_path;
 
     %let _errors=0;
+    %let _hash_path=;
+    %let _hash_rows=;
+    %let _zip_rows=;
     %let xlsx_name=template.xlsx;
 
     %let _folder=&program_dir;
@@ -268,17 +248,11 @@ run;
                 status='ERROR';
                 message='Source file does not exist.';
             end;
-            else do;
-                md5=hashing_file('MD5',transfer_path);
-                if missing(md5) then do;
-                    status='ERROR';
-                    message=cats('MD5 calculation failed: ',sysmsg());
-                end;
-            end;
+            /* MD5 is calculated by PowerShell after the manifest is exported. */
         end;
 
         keep row_id directory_path file_name md5 source_type
-             transfer_path transfer_name data_type relative_path status message;
+             transfer_path transfer_name data_type relative_path status message whole_zip;
     run;
 
     proc sql noprint;
@@ -303,6 +277,88 @@ run;
 
         proc sort data=work._tmp_results;
             by row_id;
+        run;
+    %end;
+
+    /* Direct Windows certutil MD5 for each prepared physical file. */
+    proc sql noprint;
+        select row_id into :_hash_rows separated by ' '
+        from work._tmp_results where status='OK';
+    quit;
+
+    %let _hash_n=%sysfunc(countw(%superq(_hash_rows),%str( )));
+    %do _h=1 %to &_hash_n;
+        %let _hash_row=%scan(%superq(_hash_rows),&_h,%str( ));
+
+        data _null_;
+            set work._tmp_results(where=(row_id=&_hash_row));
+            call symputx('_hash_path',strip(transfer_path),'L');
+        run;
+
+        /* PIPE reads certutil output directly; no temporary MD5 file. */
+        filename win_cmd pipe "certutil.exe -hashfile ""&_hash_path"" MD5";
+
+        data work._tmp_hash_one;
+            length calculated_md5 $32 hash_status $8 hash_message $500
+                   line $512 candidate $512;
+            row_id=&_hash_row;
+            hash_status='OK';
+            hash_message='';
+            matches=0;
+            infile win_cmd truncover end=eof;
+            do until(eof);
+                input line $char512.;
+                candidate=compress(strip(line),' ');
+                if prxmatch('/^[0-9A-F]{32}$/i',strip(candidate)) then do;
+                    matches+1;
+                    calculated_md5=upcase(candidate);
+                end;
+            end;
+            if matches ne 1 then do;
+                hash_status='ERROR';
+                hash_message='certutil did not return exactly one valid MD5.';
+                calculated_md5='';
+            end;
+            output;
+            keep row_id calculated_md5 hash_status hash_message;
+        run;
+        filename win_cmd clear;
+
+        %if &_h=1 %then %do;
+            data work._tmp_hash_results;
+                set work._tmp_hash_one;
+            run;
+        %end;
+        %else %do;
+            proc append base=work._tmp_hash_results data=work._tmp_hash_one force; run;
+        %end;
+    %end;
+
+    %if &_hash_n=0 %then %do;
+        %put ERROR: No valid transfer files found in manifest.;
+        %goto cleanup;
+    %end;
+
+    %if &_hash_n>0 %then %do;
+        proc sort data=work._tmp_results; by row_id; run;
+        proc sort data=work._tmp_hash_results; by row_id; run;
+        data work._tmp_results;
+            merge work._tmp_results(in=original)
+                  work._tmp_hash_results(in=hashed);
+            by row_id;
+            if original;
+            if status='OK' then do;
+                if not hashed then do;
+                    status='ERROR';
+                    message='No MD5 result returned for manifest row.';
+                end;
+                else do;
+                    md5=calculated_md5;
+                    status=hash_status;
+                    message=hash_message;
+                end;
+            end;
+            drop calculated_md5 hash_status hash_message;
         run;
     %end;
 
@@ -375,6 +431,11 @@ run;
     %local _folder_name _date _study_id _tag_id
            _zip_name _csv_name _zip_path _csv_path _zip_md5 _errors _folder;
 
+    %if not %sysfunc(exist(&data)) %then %do;
+        %put ERROR: Prepared transfer dataset &data does not exist; packaging skipped.;
+        %return;
+    %end;
+
     %let _folder=&program_dir;
     %let _folder_name=%sysfunc(scan(%superq(_folder),-1,%str(\/)));
     %let _date=%scan(%superq(_folder_name),1,_);
@@ -391,6 +452,7 @@ run;
     %let _zip_path=&_folder.\&_zip_name;
     %let _csv_path=&_folder.\&_csv_name;
     %let _errors=0;
+    %let _pkg_ps_rc=1;
 
     filename _pkgzip "&_zip_path" recfm=n;
     data _null_;
@@ -428,13 +490,24 @@ run;
         %return;
     %end;
 
-    filename _pkgmd5 "&_zip_path";
+    %let _zip_md5=;
+    filename pkg_cmd pipe "certutil.exe -hashfile ""&_zip_path"" MD5";
+
     data _null_;
-        length zip_md5 $32;
-        zip_md5=hashing_file('MD5','_pkgmd5',4);
-        call symputx('_zip_md5',zip_md5,'L');
+        length line $512 candidate $512 value $32;
+        retain matches 0;
+        infile pkg_cmd truncover end=eof;
+        do until(eof);
+            input line $char512.;
+            candidate=compress(strip(line),' ');
+            if prxmatch('/^[0-9A-F]{32}$/i',strip(candidate)) then do;
+                matches+1;
+                value=upcase(candidate);
+            end;
+        end;
+        if matches=1 then call symputx('_zip_md5',value,'L');
     run;
-    filename _pkgmd5 clear;
+    filename pkg_cmd clear;
 
     %if not %length(%superq(_zip_md5)) %then %do;
         %put ERROR: Cannot calculate MD5 for &_zip_path.;
