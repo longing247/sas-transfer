@@ -43,6 +43,92 @@ run;
     quit;
 %mend _resolve__excel_columns;
 
+%macro _process_zip_member(row_id=);
+    %local _zip_path;
+
+    proc sql noprint;
+        select directory_path
+          into :_zip_path trimmed
+          from work._tmp_results
+         where row_id=&row_id;
+    quit;
+
+    filename inzip ZIP "%superq(_zip_path)";
+
+    data work._tmp_zip_result_&row_id;
+        set work._tmp_results(where=(row_id=&row_id));
+
+        length member $2048 member_file $1024
+               first_member $2048 member_md5 $32 first_md5 $32
+               mem_ref $8 extract_ref $8;
+
+        status='OK';
+        message='';
+        match_count=0;
+        first_md5='';
+        first_member='';
+
+        did=dopen('inzip');
+        putlog 'ZIP_DID=' did;
+
+        if did=0 then do;
+            status='ERROR';
+            message=cats('Cannot read ZIP: ',sysmsg());
+        end;
+        else do i=1 to dnum(did) while(status='OK');
+            member=dread(did,i);
+            putlog 'ZIP_MEMBER=' member;
+
+            if substr(member,lengthn(member),1) ne '/' then do;
+                member_file=scan(member,-1,'/');
+
+                if upcase(member_file)=upcase(transfer_name) then do;
+                    match_count+1;
+                    if match_count=1 then first_member=member;
+                end;
+            end;
+        end;
+
+        if did>0 then rc2=dclose(did);
+
+        if status='OK' and match_count=0 then do;
+            status='ERROR';
+            message='Requested file not found in ZIP.';
+        end;
+
+        if status='OK' then do;
+            transfer_path=cats(pathname('work'),'\_extract_',row_id,'_',transfer_name);
+
+            extract_ref='zinmem';
+            rc1=filename(
+                extract_ref,
+                "%superq(_zip_path)",
+                'ZIP',
+                cats('member=',quote(strip(first_member)),
+                     ' recfm=n lrecl=1048576')
+            );
+            rc2=filename('xout',transfer_path,'DISK','recfm=n lrecl=1048576');
+
+            if rc1 ne 0 or rc2 ne 0 then do;
+                status='ERROR';
+                message=cats('Cannot prepare extraction: ',sysmsg());
+            end;
+            else if fcopy(extract_ref,'xout') ne 0 then do;
+                status='ERROR';
+                message=cats('Extraction failed: ',sysmsg());
+            end;
+
+            rc1=filename(extract_ref);
+            rc2=filename('xout');
+        end;
+
+        keep row_id directory_path file_name md5 source_type
+             transfer_path transfer_name data_type relative_path status message;
+    run;
+
+    filename inzip clear;
+%mend _process_zip_member;
+
 %macro prepare_transfer(
     sheet=Sheet1,
     out=work.md5_result,
@@ -147,7 +233,6 @@ run;
 
         if status='OK' and source_type='ZIP' and not whole_zip then do;
             status='ZIP';
-            transfer_path=cats(pathname('work'),'\\_extract_',row_id,'_',transfer_name);
         end;
         else if status='OK' then do;
             if whole_zip then transfer_path=directory_path;
@@ -164,8 +249,33 @@ run;
              transfer_path transfer_name data_type relative_path status message whole_zip;
     run;
 
+    proc sql noprint;
+        select row_id
+          into :_zip_rows separated by ' '
+          from work._tmp_results
+         where status='ZIP';
+    quit;
+
+    %let _zip_n=%sysfunc(countw(%superq(_zip_rows),%str( )));
+
+    %if &_zip_n>0 %then %do;
+        %do _z=1 %to &_zip_n;
+            %let _zip_row=%scan(%superq(_zip_rows),&_z,%str( ));
+            %_process_zip_member(row_id=&_zip_row);
+        %end;
+
+        data work._tmp_results;
+            set work._tmp_results(where=(status ne 'ZIP'))
+                work._tmp_zip_result_:;
+        run;
+
+        proc sort data=work._tmp_results;
+            by row_id;
+        run;
+    %end;
+
     /* PowerShell computes all MD5 values, including extracted ZIP members. */
-    proc export data=work._tmp_results(where=(status in ('OK','ZIP'))
+    proc export data=work._tmp_results(where=(status='OK')
          keep=row_id directory_path transfer_name transfer_path source_type whole_zip)
          outfile="&_folder.\\_tmp_md5_input.csv" dbms=csv replace;
     run;
