@@ -141,7 +141,7 @@ run;
 );
     %local _dircol _filecol _md5col _errors
            _zip_rows _zip_n _z _zip_row _select_list
-           _xlsx _result_xlsx _result_name _folder xlsx_name _hash_rows _hash_n _h _hash_row _hash_path _hash_rc;
+           _xlsx _result_xlsx _result_name _folder xlsx_name _hash_rows _hash_n _h _hash_row _hash_path;
 
     %let _errors=0;
     %let _hash_path=;
@@ -295,17 +295,8 @@ run;
             call symputx('_hash_path',strip(transfer_path),'L');
         run;
 
-        /* Remove stale output before invoking certutil. */
-        filename _hmd5 "&_folder.\\_tmp_md5_value.txt";
-        data _null_;
-            if fexist('_hmd5') then rc=fdelete('_hmd5');
-        run;
-        filename _hmd5 clear;
-
-        %let _hash_rc=1;
-        systask command
-          "cmd.exe /d /c certutil.exe -hashfile ""&_hash_path"" MD5 > ""&_folder.\\_tmp_md5_value.txt"" 2>&1"
-          taskname=md5_calc wait status=_hash_rc;
+        /* PIPE reads certutil output directly; no temporary MD5 file. */
+        filename win_cmd pipe "certutil.exe -hashfile ""&_hash_path"" MD5";
 
         data work._tmp_hash_one;
             length calculated_md5 $32 hash_status $8 hash_message $500
@@ -313,27 +304,25 @@ run;
             row_id=&_hash_row;
             hash_status='OK';
             hash_message='';
-            %if &_hash_rc ne 0 %then %do;
+            matches=0;
+            infile win_cmd truncover end=eof;
+            do until(eof);
+                input line $char512.;
+                candidate=compress(strip(line),' ');
+                if prxmatch('/^[0-9A-F]{32}$/i',strip(candidate)) then do;
+                    matches+1;
+                    calculated_md5=upcase(candidate);
+                end;
+            end;
+            if matches ne 1 then do;
                 hash_status='ERROR';
-                hash_message='Windows certutil MD5 calculation failed.';
-                output;
-            %end;
-            %else %do;
-                infile "&_folder.\\_tmp_md5_value.txt" truncover end=eof;
-                do until(eof);
-                    input line $char512.;
-                    candidate=compress(strip(line),' ');
-                    if prxmatch('/^[0-9A-F]{32}$/i',strip(candidate)) then
-                        calculated_md5=upcase(candidate);
-                end;
-                if missing(calculated_md5) then do;
-                    hash_status='ERROR';
-                    hash_message='No valid MD5 in certutil output.';
-                end;
-                output;
-            %end;
+                hash_message='certutil did not return exactly one valid MD5.';
+                calculated_md5='';
+            end;
+            output;
             keep row_id calculated_md5 hash_status hash_message;
         run;
+        filename win_cmd clear;
 
         %if &_h=1 %then %do;
             data work._tmp_hash_results;
@@ -440,7 +429,7 @@ run;
 /* Package the prepared files and create the persistent upload snapshot. */
 %macro package_transfer(data=work.md5_result);
     %local _folder_name _date _study_id _tag_id
-           _zip_name _csv_name _zip_path _csv_path _zip_md5 _errors _folder _pkg_ps_rc;
+           _zip_name _csv_name _zip_path _csv_path _zip_md5 _errors _folder;
 
     %if not %sysfunc(exist(&data)) %then %do;
         %put ERROR: Prepared transfer dataset &data does not exist; packaging skipped.;
@@ -502,33 +491,23 @@ run;
     %end;
 
     %let _zip_md5=;
-    filename _pmd5 "&_folder.\\_tmp_package_md5.txt";
-    data _null_;
-        if fexist('_pmd5') then rc=fdelete('_pmd5');
-    run;
-    filename _pmd5 clear;
-
-    %let _pkg_ps_rc=1;
-    systask command
-      "cmd.exe /d /c certutil.exe -hashfile ""&_zip_path"" MD5 > ""&_folder.\\_tmp_package_md5.txt"" 2>&1"
-      taskname=package_md5 wait status=_pkg_ps_rc;
-
-    %if &_pkg_ps_rc ne 0 %then %do;
-        %put ERROR: Windows certutil package MD5 calculation failed.;
-        %return;
-    %end;
+    filename pkg_cmd pipe "certutil.exe -hashfile ""&_zip_path"" MD5";
 
     data _null_;
         length line $512 candidate $512 value $32;
-        infile "&_folder.\\_tmp_package_md5.txt" truncover end=eof;
+        retain matches 0;
+        infile pkg_cmd truncover end=eof;
         do until(eof);
             input line $char512.;
             candidate=compress(strip(line),' ');
-            if prxmatch('/^[0-9A-F]{32}$/i',strip(candidate)) then
+            if prxmatch('/^[0-9A-F]{32}$/i',strip(candidate)) then do;
+                matches+1;
                 value=upcase(candidate);
+            end;
         end;
-        if not missing(value) then call symputx('_zip_md5',value,'L');
+        if matches=1 then call symputx('_zip_md5',value,'L');
     run;
+    filename pkg_cmd clear;
 
     %if not %length(%superq(_zip_md5)) %then %do;
         %put ERROR: Cannot calculate MD5 for &_zip_path.;
